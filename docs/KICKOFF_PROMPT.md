@@ -22,3 +22,18 @@ Rules:
 - Never run destructive commands, never push, and never touch anything on this machine outside this repo without asking.
 - Do not trust memory for CLI flags or library APIs; check docs or `--help`.
 - If the PRD seems wrong or impractical, write an ADR in `docs/adr/` and tell me instead of silently changing course.
+
+
+--------------------------------------
+
+Gate N-1 passed. Start Phase N of agent-dashboard.
+
+Read AGENTS.md and PLAN.md again, plus any ADRs in docs/adr/, since decisions there override assumptions in the PRD. Then:
+
+1. Summarise Phase N in at most 8 lines, including its gate test and any spikes in it.
+2. Do the spikes first and write each result to docs/adr/. Show me the findings and wait for my OK if a spike changes the design.
+3. Design the state machines or interfaces this phase touches (states, transitions, commands) and show them to me before coding the shell around them.
+4. Implement the tasks in order, ticking boxes in PLAN.md and writing tests as you go. If something in the PRD no longer fits, write an ADR and tell me instead of silently changing course.
+5. Run `make verify` until green, then stop at Gate N and tell me exactly what to test on my phone, what is installed or changed on the VPS, and what you left out.
+
+Do not start Phase N+1.

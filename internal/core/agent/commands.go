@@ -59,11 +59,19 @@ type InputSendMessage struct {
 
 func (InputSendMessage) isInput() {}
 
+type InputApprovalRequest struct {
+	Now     time.Time
+	Request ApprovalRequest
+}
+
+func (InputApprovalRequest) isInput() {}
+
 type InputApprovalDecision struct {
 	Now        time.Time
 	AgentID    string
 	ApprovalID string
 	Approved   bool
+	Always     bool
 }
 
 func (InputApprovalDecision) isInput() {}
@@ -175,3 +183,30 @@ type CmdNotifyUser struct {
 }
 
 func (CmdNotifyUser) isCommand() {}
+
+type CmdResolveApproval struct {
+	AgentID    string
+	ApprovalID string
+	Action     string // "allow" | "deny" | "abort"
+}
+
+func (CmdResolveApproval) isCommand() {}
+
+type CmdPersistApproval struct {
+	ID        string
+	AgentID   string
+	Request   string // JSON representation of request
+	Decision  string // "pending" | "approved" | "denied" | "always_allowed"
+	DecidedAt *time.Time
+}
+
+func (CmdPersistApproval) isCommand() {}
+
+type CmdAuditLog struct {
+	Actor  string
+	Action string
+	Target string
+	Result string
+}
+
+func (CmdAuditLog) isCommand() {}

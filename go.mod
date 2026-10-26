@@ -6,11 +6,12 @@ require (
 	github.com/go-webauthn/webauthn v0.11.2
 	github.com/pquerna/otp v1.4.0
 	github.com/shirou/gopsutil/v3 v3.24.5
-	golang.org/x/crypto v0.28.0
+	golang.org/x/crypto v0.31.0
 	modernc.org/sqlite v1.33.1
 )
 
 require (
+	github.com/SherClockHolmes/webpush-go v1.4.0 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/creack/pty v1.1.24 // indirect
@@ -33,7 +34,7 @@ require (
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/sys v0.26.0 // indirect
+	golang.org/x/sys v0.28.0 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.55.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect

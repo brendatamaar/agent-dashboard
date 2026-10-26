@@ -1,10 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
+  Bell,
+  BellOff,
   Bot,
   Cpu,
   FolderGit2,
   GitBranch,
+  GitCommit,
   HardDrive,
   Key,
   Lock,
@@ -21,6 +24,7 @@ import {
 } from 'lucide-react';
 import {
   Agent,
+  ApprovalItem,
   AuditEntry,
   CreateAgentInput,
   NormalizedEvent,
@@ -33,6 +37,7 @@ import {
   checkSetupStatus,
   createAgent,
   createSecret,
+  decideApproval,
   deleteAgent,
   deleteRepo,
   deleteSecret,
@@ -40,18 +45,24 @@ import {
   getAgent,
   getAgentEvents,
   getAgents,
+  getApprovals,
   getAuditLogs,
   getMe,
   getRepos,
   getSecrets,
   getSystemStats,
+  getVAPIDKey,
   loginWithPasskey,
   pullRepo,
   registerPasskey,
   sendAgentMessage,
   stopAgent,
+  subscribePush,
+  unsubscribePush,
 } from './api';
 import { Terminal } from './components/Terminal';
+import { ApprovalCard } from './components/ApprovalCard';
+import { CommitSheet } from './components/CommitSheet';
 
 export default function App() {
   const [loading, setLoading] = useState(true);
@@ -98,11 +109,37 @@ export default function App() {
   const [newSecName, setNewSecName] = useState('claude_token');
   const [newSecVal, setNewSecVal] = useState('');
 
+  // Phase 2: Git & Approvals & Push states
+  const [commitSheetAgent, setCommitSheetAgent] = useState<Agent | null>(null);
+  const [agentApprovals, setAgentApprovals] = useState<ApprovalItem[]>([]);
+  const [pushSupported, setPushSupported] = useState(false);
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
   // Agent detail states
   const [agentEvents, setAgentEvents] = useState<NormalizedEvent[]>([]);
   const [followupMsg, setFollowupMsg] = useState('');
   const eventStreamRef = useRef<WebSocket | null>(null);
   const eventsEndRef = useRef<HTMLDivElement>(null);
+
+  function urlBase64ToUint8Array(base64String: string) {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  }
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((cur) => (cur === msg ? null : cur));
+    }, 3500);
+  };
 
   const init = async () => {
     try {
@@ -149,6 +186,24 @@ export default function App() {
     init();
   }, []);
 
+  // Check push notification capability and current subscription
+  useEffect(() => {
+    if (!user) return;
+    if ('serviceWorker' in navigator && 'PushManager' in window) {
+      setPushSupported(true);
+      navigator.serviceWorker.ready
+        .then((reg) => {
+          reg.pushManager
+            .getSubscription()
+            .then((sub) => {
+              setPushSubscribed(!!sub);
+            })
+            .catch(() => {});
+        })
+        .catch(() => {});
+    }
+  }, [user]);
+
   // Poll for agent updates every 5 seconds when logged in
   useEffect(() => {
     if (!user) return;
@@ -160,6 +215,28 @@ export default function App() {
     }, 5000);
     return () => clearInterval(interval);
   }, [user, activeTab]);
+
+  const loadApprovals = async (agentId: string) => {
+    try {
+      const list = await getApprovals(agentId);
+      setAgentApprovals(list.filter((a) => a.decision === 'pending'));
+    } catch {
+      // ignore
+    }
+  };
+
+  // Poll approvals when an agent is selected
+  useEffect(() => {
+    if (!selectedAgentId) {
+      setAgentApprovals([]);
+      return;
+    }
+    loadApprovals(selectedAgentId);
+    const interval = setInterval(() => {
+      loadApprovals(selectedAgentId);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [selectedAgentId]);
 
   // Connect to WebSocket events when viewing agent detail
   useEffect(() => {
@@ -191,6 +268,9 @@ export default function App() {
       try {
         const eventData: NormalizedEvent = JSON.parse(ev.data);
         setAgentEvents((prev) => [...prev, eventData]);
+        if (eventData.type === 'approval_needed') {
+          loadApprovals(selectedAgentId);
+        }
         getAgent(selectedAgentId).then((updated) => {
           setAgents((all) => all.map((a) => (a.id === updated.id ? updated : a)));
         });
@@ -340,6 +420,49 @@ export default function App() {
       setFollowupMsg('');
     } catch (err: any) {
       setError(err.message);
+    }
+  };
+
+  const handleTogglePush = async () => {
+    if (!pushSupported || pushLoading) return;
+    setPushLoading(true);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        await existing.unsubscribe();
+        await unsubscribePush(existing.endpoint);
+        setPushSubscribed(false);
+        showToast('Push notifications disabled');
+      } else {
+        const vapidKey = await getVAPIDKey();
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidKey),
+        });
+        await subscribePush(sub);
+        setPushSubscribed(true);
+        showToast('Push notifications enabled!');
+      }
+    } catch (err: any) {
+      console.error('Push subscription failed:', err);
+      alert('Failed to toggle push notifications: ' + (err.message || err));
+    } finally {
+      setPushLoading(false);
+    }
+  };
+
+  const handleApprovalDecision = async (approvalId: string, decision: 'approve' | 'deny' | 'always_allow') => {
+    if (!selectedAgentId) return;
+    try {
+      await decideApproval(selectedAgentId, approvalId, decision);
+      setAgentApprovals((prev) => prev.filter((a) => a.id !== approvalId));
+      getAgent(selectedAgentId).then((updated) => {
+        setAgents((all) => all.map((a) => (a.id === updated.id ? updated : a)));
+      });
+      showToast(decision === 'deny' ? 'Action denied' : 'Action approved');
+    } catch (err: any) {
+      alert('Failed to submit approval decision: ' + (err.message || err));
     }
   };
 
@@ -556,6 +679,17 @@ export default function App() {
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {pushSupported && (
+            <button
+              className={`btn ${pushSubscribed ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={handleTogglePush}
+              disabled={pushLoading}
+              title={pushSubscribed ? 'Push Notifications Active (Click to disable)' : 'Enable Push Notifications'}
+              style={{ padding: '0.4rem 0.6rem' }}
+            >
+              {pushSubscribed ? <Bell style={{ width: 16, height: 16 }} /> : <BellOff style={{ width: 16, height: 16, opacity: 0.7 }} />}
+            </button>
+          )}
           <button className="btn btn-secondary" onClick={loadDashboardData} title="Refresh">
             <RefreshCw style={{ width: 16, height: 16 }} />
           </button>
@@ -594,7 +728,14 @@ export default function App() {
             >
               ← Back to Agents
             </button>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setCommitSheetAgent(selectedAgent)}
+                title="Review git changes and commit/push"
+              >
+                <GitCommit style={{ width: 16, height: 16 }} /> Git Review
+              </button>
               <button
                 className={`btn ${showAgentTerminal ? 'btn-primary' : 'btn-secondary'}`}
                 onClick={() => setShowAgentTerminal(!showAgentTerminal)}
@@ -631,6 +772,22 @@ export default function App() {
               <div style={{ padding: '0.625rem', backgroundColor: '#0f172a', borderRadius: '0.375rem', fontSize: '0.875rem', marginBottom: '0.75rem' }}>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', textTransform: 'uppercase' }}>Task Prompt</span>
                 {selectedAgent.prompt}
+              </div>
+            )}
+
+            {/* Pending Approvals */}
+            {agentApprovals.length > 0 && (
+              <div style={{ marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Pending Approvals ({agentApprovals.length})
+                </div>
+                {agentApprovals.map((app) => (
+                  <ApprovalCard
+                    key={app.id}
+                    approval={app}
+                    onDecide={(decision) => handleApprovalDecision(app.id, decision)}
+                  />
+                ))}
               </div>
             )}
 
@@ -734,32 +891,59 @@ export default function App() {
               </button>
             </div>
           ) : (
-            agents.map((ag) => (
-              <div
-                key={ag.id}
-                className={`agent-card ${ag.state === 'awaiting_approval' ? 'needs-action' : ''}`}
-                onClick={() => setSelectedAgentId(ag.id)}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.375rem' }}>
-                  <div>
-                    <span style={{ fontWeight: 600, fontSize: '0.9375rem' }}>{ag.id}</span>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.125rem' }}>
-                      <code>{ag.branch}</code>
+            [...agents]
+              .sort((a, b) => {
+                const priority = (s: string) => {
+                  switch (s) {
+                    case 'awaiting_approval': return 0;
+                    case 'idle': return 1;
+                    case 'running': return 2;
+                    case 'provisioning': return 3;
+                    case 'queued': return 4;
+                    default: return 5;
+                  }
+                };
+                return priority(a.state) - priority(b.state);
+              })
+              .map((ag) => (
+                <div
+                  key={ag.id}
+                  className={`agent-card ${ag.state === 'awaiting_approval' ? 'needs-action' : ''}`}
+                  onClick={() => setSelectedAgentId(ag.id)}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.375rem' }}>
+                    <div>
+                      <span style={{ fontWeight: 600, fontSize: '0.9375rem' }}>{ag.id}</span>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.125rem' }}>
+                        <code>{ag.branch}</code>
+                      </div>
+                    </div>
+                    <div>{renderStateBadge(ag.state)}</div>
+                  </div>
+                  {ag.prompt && (
+                    <p style={{ fontSize: '0.8125rem', color: 'var(--text-main)', marginTop: '0.375rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {ag.prompt}
+                    </p>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem', fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
+                    <span>Harness: {ag.harness} ({ag.mode})</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        style={{ fontSize: '0.6875rem', padding: '0.2rem 0.4rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCommitSheetAgent(ag);
+                        }}
+                        title="Review and commit/push changes"
+                      >
+                        <GitCommit style={{ width: 12, height: 12 }} /> Git
+                      </button>
+                      <span>{new Date(ag.updated_at).toLocaleTimeString()}</span>
                     </div>
                   </div>
-                  <div>{renderStateBadge(ag.state)}</div>
                 </div>
-                {ag.prompt && (
-                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-main)', marginTop: '0.375rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {ag.prompt}
-                  </p>
-                )}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem', fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
-                  <span>Harness: {ag.harness} ({ag.mode})</span>
-                  <span>{new Date(ag.updated_at).toLocaleTimeString()}</span>
-                </div>
-              </div>
-            ))
+              ))
           )}
         </div>
       )}
@@ -1122,6 +1306,43 @@ export default function App() {
               </button>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* COMMIT & REVIEW SHEET */}
+      {commitSheetAgent && (
+        <CommitSheet
+          agentId={commitSheetAgent.id}
+          agentBranch={commitSheetAgent.branch}
+          agentPrompt={commitSheetAgent.prompt}
+          onClose={() => setCommitSheetAgent(null)}
+          onSuccess={(msg) => {
+            showToast(msg);
+            loadDashboardData();
+          }}
+        />
+      )}
+
+      {/* TOAST MESSAGE */}
+      {toastMessage && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '4.5rem',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            backgroundColor: '#1e293b',
+            border: '1px solid #38bdf8',
+            color: '#f8fafc',
+            padding: '0.5rem 1rem',
+            borderRadius: '0.5rem',
+            fontSize: '0.875rem',
+            zIndex: 200,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {toastMessage}
         </div>
       )}
 

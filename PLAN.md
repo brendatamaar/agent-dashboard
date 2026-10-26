@@ -52,13 +52,13 @@ Goal: start, watch and stop a Claude Code agent on a repo from the phone, with t
 
 Goal: review and ship from the phone.
 
-- [ ] Git service (run `git` with argument arrays, never shell strings): status, changed-file tree, unified diff, stage/unstage (file and hunk), commit, amend, branch create/switch/delete, push with upstream, pull/rebase onto base.
-- [ ] Push and PR with the dashboard's token only; agents never see it. Open a PR with title and body, body drafted from the agent's summary.
-- [ ] Guardrails: protected-branch list, no force-push, confirmation dialog for pushing `main`. Tests for each refusal.
-- [ ] **Spike (approvals):** compare a `PreToolUse`-style hook that calls the dashboard and waits, against the headless permission-prompt option, for surfacing Claude Code permission prompts. Pick one, document it in `docs/adr/0003-approvals.md`, and add a fallback: if a prompt cannot be intercepted, notify "needs input" and open the terminal.
-- [ ] Approval cards in the UI (command, file, diff) with Approve / Deny / Always allow for this agent; approvals table and audit entries.
-- [ ] Web Push (VAPID keys generated at setup) for: needs approval, finished, failed, idle too long; notifications deep-link to the agent card.
-- [ ] Phone UI polish: unified diff view, commit sheet, one-handed actions, terminal extra-key row (Esc, Tab, Ctrl, arrows).
+- [x] Git service (run `git` with argument arrays, never shell strings): status, changed-file tree, unified diff, stage/unstage (file and hunk), commit, amend, branch create/switch/delete, push with upstream, pull/rebase onto base.
+- [x] Push and PR with the dashboard's token only; agents never see it. Open a PR with title and body, body drafted from the agent's summary.
+- [x] Guardrails: protected-branch list, no force-push, confirmation dialog for pushing `main`. Tests for each refusal.
+- [x] **Spike (approvals):** compare a `PreToolUse`-style hook that calls the dashboard and waits, against the headless permission-prompt option, for surfacing Claude Code permission prompts. Pick one, document it in `docs/adr/0004-approvals.md`, and add a fallback: if a prompt cannot be intercepted, notify "needs input" and open the terminal.
+- [x] Approval cards in the UI (command, file, diff) with Approve / Deny / Always allow for this agent; approvals table and audit entries.
+- [x] Web Push (VAPID keys generated at setup) for: needs approval, finished, failed, idle too long; notifications deep-link to the agent card.
+- [x] Phone UI polish: unified diff view, commit sheet, one-handed actions, terminal extra-key row (Esc, Tab, Ctrl, arrows).
 
 **Gate 2:** end to end from the phone: an agent asks for permission → push arrives → approve → agent finishes → push arrives → review the diff → commit → push → PR opened. No credentials appear in agent logs.
 

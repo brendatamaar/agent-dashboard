@@ -594,3 +594,142 @@ func (s *Store) GetEvents(ctx context.Context, agentID string, afterSeq int64) (
 	}
 	return events, rows.Err()
 }
+
+// ApprovalRecord represents an action requiring user approval.
+type ApprovalRecord struct {
+	ID          string     `json:"id"`
+	AgentID     string     `json:"agent_id"`
+	RequestJSON string     `json:"request_json"`
+	Decision    string     `json:"decision"`
+	DecidedAt   *time.Time `json:"decided_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// CreateApproval records a new pending approval request.
+func (s *Store) CreateApproval(ctx context.Context, id, agentID, requestJSON string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO approvals (id, agent_id, request_json, decision, created_at)
+		VALUES (?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET request_json = excluded.request_json
+	`, id, agentID, requestJSON)
+	return err
+}
+
+// UpdateApprovalDecision updates the decision on an approval request.
+func (s *Store) UpdateApprovalDecision(ctx context.Context, id, decision string, decidedAt *time.Time) error {
+	var err error
+	if decidedAt != nil {
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE approvals SET decision = ?, decided_at = ? WHERE id = ?
+		`, decision, *decidedAt, id)
+	} else {
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE approvals SET decision = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?
+		`, decision, id)
+	}
+	return err
+}
+
+// GetApproval retrieves an approval by ID.
+func (s *Store) GetApproval(ctx context.Context, id string) (*ApprovalRecord, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, agent_id, request_json, decision, decided_at, created_at
+		FROM approvals WHERE id = ?
+	`, id)
+	var a ApprovalRecord
+	var decidedAt sql.NullTime
+	err := row.Scan(&a.ID, &a.AgentID, &a.RequestJSON, &a.Decision, &decidedAt, &a.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if decidedAt.Valid {
+		a.DecidedAt = &decidedAt.Time
+	}
+	return &a, nil
+}
+
+// ListApprovals retrieves approvals for an agent, or all approvals if agentID is empty.
+func (s *Store) ListApprovals(ctx context.Context, agentID string) ([]ApprovalRecord, error) {
+	var rows *sql.Rows
+	var err error
+	if agentID != "" {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, agent_id, request_json, decision, decided_at, created_at
+			FROM approvals WHERE agent_id = ? ORDER BY created_at DESC
+		`, agentID)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, agent_id, request_json, decision, decided_at, created_at
+			FROM approvals ORDER BY created_at DESC
+		`)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var approvals []ApprovalRecord
+	for rows.Next() {
+		var a ApprovalRecord
+		var decidedAt sql.NullTime
+		if err := rows.Scan(&a.ID, &a.AgentID, &a.RequestJSON, &a.Decision, &decidedAt, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		if decidedAt.Valid {
+			a.DecidedAt = &decidedAt.Time
+		}
+		approvals = append(approvals, a)
+	}
+	return approvals, rows.Err()
+}
+
+// PushSubscription represents a Web Push subscription.
+type PushSubscription struct {
+	ID        string    `json:"id"`
+	Endpoint  string    `json:"endpoint"`
+	P256dh    string    `json:"p256dh"`
+	Auth      string    `json:"auth"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SavePushSubscription inserts or replaces a push subscription.
+func (s *Store) SavePushSubscription(ctx context.Context, endpoint, p256dh, auth string) error {
+	id := fmt.Sprintf("sub_%x", sha256.Sum256([]byte(endpoint)))
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO push_subscriptions (id, endpoint, p256dh, auth, created_at)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth
+	`, id, endpoint, p256dh, auth)
+	return err
+}
+
+// ListPushSubscriptions returns all registered Web Push subscriptions.
+func (s *Store) ListPushSubscriptions(ctx context.Context) ([]PushSubscription, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, endpoint, p256dh, auth, created_at
+		FROM push_subscriptions ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []PushSubscription
+	for rows.Next() {
+		var sub PushSubscription
+		if err := rows.Scan(&sub.ID, &sub.Endpoint, &sub.P256dh, &sub.Auth, &sub.CreatedAt); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
+}
+
+// DeletePushSubscription deletes a push subscription by its endpoint.
+func (s *Store) DeletePushSubscription(ctx context.Context, endpoint string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE endpoint = ?", endpoint)
+	return err
+}

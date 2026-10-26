@@ -17,6 +17,7 @@ import (
 	"agent-dashboard/internal/harness/claude"
 	"agent-dashboard/internal/runtime"
 	"agent-dashboard/internal/shell/git"
+	"agent-dashboard/internal/shell/notifier"
 	"agent-dashboard/internal/store"
 )
 
@@ -65,17 +66,19 @@ type SecretDecryptor interface {
 }
 
 type Orchestrator struct {
-	mu           sync.Mutex
-	mgrState     agent.ManagerState
-	store        *store.Store
-	gitSvc       *git.Service
-	rt           runtime.Runtime
-	harnesses    map[string]harness.Harness
-	broadcaster  *EventBroadcaster
-	decryptor    SecretDecryptor
-	seqCounters  map[string]*int64
-	logger       *slog.Logger
-	cancelFuncs  map[string]context.CancelFunc
+	mu                 sync.Mutex
+	mgrState           agent.ManagerState
+	store              *store.Store
+	gitSvc             *git.Service
+	notifier           *notifier.Notifier
+	rt                 runtime.Runtime
+	harnesses          map[string]harness.Harness
+	broadcaster        *EventBroadcaster
+	decryptor          SecretDecryptor
+	seqCounters        map[string]*int64
+	logger             *slog.Logger
+	cancelFuncs        map[string]context.CancelFunc
+	pendingResolutions map[string]chan string
 }
 
 func NewOrchestrator(
@@ -91,17 +94,34 @@ func NewOrchestrator(
 	}
 	claudeAdapter := claude.NewAdapter()
 	return &Orchestrator{
-		mgrState:    agent.NewManagerState(runningCap),
-		store:       s,
-		gitSvc:      gitSvc,
-		rt:          rt,
-		harnesses:   map[string]harness.Harness{"claude": claudeAdapter},
-		broadcaster: NewEventBroadcaster(),
-		decryptor:   decryptor,
-		seqCounters: make(map[string]*int64),
-		logger:      logger,
-		cancelFuncs: make(map[string]context.CancelFunc),
+		mgrState:           agent.NewManagerState(runningCap),
+		store:              s,
+		gitSvc:             gitSvc,
+		rt:                 rt,
+		harnesses:          map[string]harness.Harness{"claude": claudeAdapter},
+		broadcaster:        NewEventBroadcaster(),
+		decryptor:          decryptor,
+		seqCounters:        make(map[string]*int64),
+		logger:             logger,
+		cancelFuncs:        make(map[string]context.CancelFunc),
+		pendingResolutions: make(map[string]chan string),
 	}
+}
+
+func (o *Orchestrator) SetNotifier(n *notifier.Notifier) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.notifier = n
+}
+
+func (o *Orchestrator) GitService() *git.Service {
+	return o.gitSvc
+}
+
+func (o *Orchestrator) Notifier() *notifier.Notifier {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.notifier
 }
 
 func (o *Orchestrator) Broadcaster() *EventBroadcaster {
@@ -139,62 +159,48 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 			CreatedAt:        rec.CreatedAt,
 			UpdatedAt:        rec.UpdatedAt,
 		}
-		// Resolve repo path
-		if r, err := o.store.GetRepo(ctx, rec.RepoID); err == nil {
-			a.RepoPath = r.Path
-		}
 		o.mgrState.Agents[a.ID] = a
 		if a.State == agent.StateQueued {
 			o.mgrState.Queue = append(o.mgrState.Queue, a.ID)
 		}
 	}
 
-	// 2. Discover running tmux sessions
-	activeSessions, err := o.rt.ListSessions(ctx)
-	if err != nil {
-		o.logger.Warn("could not list runtime sessions on boot", "error", err)
-	}
-	sessionSet := make(map[string]bool)
-	for _, s := range activeSessions {
-		sessionSet[s] = true
+	// 2. Query running tmux sessions on the host
+	runningSessions := make(map[string]bool)
+	sessions, err := o.rt.ListSessions(ctx)
+	if err == nil {
+		for _, s := range sessions {
+			runningSessions[s] = true
+		}
+	} else {
+		o.logger.Warn("could not fetch host runtime sessions", "error", err)
 	}
 
-	// 3. Step reconcile input through pure state machine
+	// 3. Reconcile boot state
 	var cmds []agent.Command
 	o.mgrState, cmds, err = agent.Step(o.mgrState, agent.InputReconcileBoot{
 		Now:                 time.Now().UTC(),
-		RunningTmuxSessions: sessionSet,
+		RunningTmuxSessions: runningSessions,
 	})
 	if err != nil {
-		return fmt.Errorf("reconciliation step error: %w", err)
+		return fmt.Errorf("reconcile boot failed: %w", err)
 	}
 
-	// 4. Execute commands from reconciliation
-	go o.executeCommands(context.Background(), cmds)
-
-	o.logger.Info("orchestrator initialized",
-		"loaded_agents", len(records),
-		"active_tmux", len(activeSessions),
-		"active_agents", o.mgrState.ActiveCount(),
-	)
+	go o.executeCommands(ctx, cmds)
 	return nil
 }
 
-// SubmitAgent handles user request to create and run an agent.
-func (o *Orchestrator) SubmitAgent(ctx context.Context, repoID, harnessName, model, mode, prompt, baseBranch, customBranch string) (*agent.Agent, error) {
+// SubmitAgent starts provisioning an agent or queues it.
+func (o *Orchestrator) SubmitAgent(
+	ctx context.Context,
+	repoID, harnessName, model, mode, prompt, customBranch, baseBranch string,
+) (*agent.Agent, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
 	r, err := o.store.GetRepo(ctx, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("repo %q not found: %w", repoID, err)
-	}
-
-	if harnessName == "" {
-		harnessName = "claude"
-	}
-	if _, ok := o.harnesses[harnessName]; !ok {
-		return nil, fmt.Errorf("unsupported harness %q", harnessName)
 	}
 
 	if baseBranch == "" {
@@ -259,6 +265,82 @@ func (o *Orchestrator) SendMessage(ctx context.Context, agentID, message string)
 	}
 	go o.executeCommands(context.Background(), cmds)
 	return nil
+}
+
+// RequestApproval submits a structured tool approval request and blocks until a user decision arrives.
+func (o *Orchestrator) RequestApproval(ctx context.Context, req agent.ApprovalRequest) (string, error) {
+	respCh := make(chan string, 1)
+
+	o.mu.Lock()
+	if o.pendingResolutions == nil {
+		o.pendingResolutions = make(map[string]chan string)
+	}
+	o.pendingResolutions[req.ID] = respCh
+
+	var cmds []agent.Command
+	var err error
+	o.mgrState, cmds, err = agent.Step(o.mgrState, agent.InputApprovalRequest{
+		Now:     time.Now().UTC(),
+		Request: req,
+	})
+	o.mu.Unlock()
+
+	if err != nil {
+		o.mu.Lock()
+		delete(o.pendingResolutions, req.ID)
+		o.mu.Unlock()
+		return "deny", err
+	}
+
+	go o.executeCommands(ctx, cmds)
+
+	select {
+	case action := <-respCh:
+		return action, nil
+	case <-ctx.Done():
+		o.mu.Lock()
+		delete(o.pendingResolutions, req.ID)
+		o.mu.Unlock()
+		return "abort", ctx.Err()
+	}
+}
+
+// DecideApproval records user decision for an approval request and resolves any pending hook.
+func (o *Orchestrator) DecideApproval(ctx context.Context, agentID, approvalID string, approved, always bool) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	var cmds []agent.Command
+	var err error
+	o.mgrState, cmds, err = agent.Step(o.mgrState, agent.InputApprovalDecision{
+		Now:        time.Now().UTC(),
+		AgentID:    agentID,
+		ApprovalID: approvalID,
+		Approved:   approved,
+		Always:     always,
+	})
+	if err != nil {
+		return err
+	}
+
+	go o.executeCommands(ctx, cmds)
+	return nil
+}
+
+func (o *Orchestrator) resolveApproval(approvalID, action string) {
+	o.mu.Lock()
+	ch, ok := o.pendingResolutions[approvalID]
+	if ok {
+		delete(o.pendingResolutions, approvalID)
+	}
+	o.mu.Unlock()
+
+	if ok && ch != nil {
+		select {
+		case ch <- action:
+		default:
+		}
+	}
 }
 
 // StopAgent stops an agent and frees its concurrency slot.
@@ -397,8 +479,31 @@ func (o *Orchestrator) executeCommands(ctx context.Context, cmds []agent.Command
 			_ = o.store.AppendEvent(ctx, c.AgentID, c.Event.Seq, string(c.Event.Type), string(payloadBytes))
 			o.broadcaster.Broadcast(c.AgentID, c.Event)
 
+		case agent.CmdResolveApproval:
+			o.resolveApproval(c.ApprovalID, c.Action)
+
+		case agent.CmdPersistApproval:
+			if c.Decision == "pending" {
+				_ = o.store.CreateApproval(ctx, c.ID, c.AgentID, c.Request)
+			} else {
+				_ = o.store.UpdateApprovalDecision(ctx, c.ID, c.Decision, c.DecidedAt)
+			}
+
+		case agent.CmdAuditLog:
+			_ = o.store.WriteAudit(ctx, c.Actor, c.Action, c.Target, c.Result)
+
 		case agent.CmdNotifyUser:
 			o.logger.Info("push notification", "title", c.Title, "body", c.Body, "url", c.TargetURL)
+			o.mu.Lock()
+			notif := o.notifier
+			o.mu.Unlock()
+			if notif != nil {
+				notif.NotifyAll(ctx, notifier.NotificationPayload{
+					Title:     c.Title,
+					Body:      c.Body,
+					TargetURL: c.TargetURL,
+				})
+			}
 		}
 	}
 }

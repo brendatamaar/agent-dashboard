@@ -27,10 +27,16 @@ func (s *SecretsHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if list == nil {
-		list = []store.Secret{}
+	var filtered []store.Secret
+	for _, sec := range list {
+		if sec.Kind != "vapid_keys" {
+			filtered = append(filtered, sec)
+		}
 	}
-	writeJSON(w, http.StatusOK, list)
+	if filtered == nil {
+		filtered = []store.Secret{}
+	}
+	writeJSON(w, http.StatusOK, filtered)
 }
 
 type CreateSecretRequest struct {

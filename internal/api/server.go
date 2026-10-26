@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"agent-dashboard/internal/core/auth"
 	"agent-dashboard/internal/runtime/host"
 	"agent-dashboard/internal/shell/git"
+	"agent-dashboard/internal/shell/notifier"
 	"agent-dashboard/internal/shell/orchestrator"
 	"agent-dashboard/internal/store"
 )
@@ -47,9 +47,20 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	hostRt := host.NewHostRuntime()
 	orch := orchestrator.NewOrchestrator(s, gitSvc, hostRt, secretsHandler, logger, 1)
 
+	// Push Notifier wiring
+	pushNotifier, err := notifier.NewNotifier(s, logger)
+	if err != nil {
+		logger.Warn("Failed to initialize push notifier", "error", err)
+	} else {
+		orch.SetNotifier(pushNotifier)
+	}
+
 	reposHandler := NewReposHandler(s, gitSvc, secretsHandler)
 	agentsHandler := NewAgentsHandler(s, orch)
 	wsHandler := NewWSHandler(s, orch)
+	approvalsHandler := NewApprovalsHandler(s, orch)
+	pushHandler := NewPushHandler(s, pushNotifier)
+	gitHandler := NewGitHandler(s, gitSvc, orch, secretsHandler)
 
 	// Health check (unauthenticated)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +111,32 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	mux.HandleFunc("DELETE /api/agents/{id}", RequireAuth(s, agentsHandler.HandleDelete))
 	mux.HandleFunc("GET /api/agents/{id}/events", RequireAuth(s, agentsHandler.HandleGetEvents))
 
+	// Protected Approvals
+	mux.HandleFunc("GET /api/agents/{id}/approvals", RequireAuth(s, approvalsHandler.HandleList))
+	mux.HandleFunc("POST /api/agents/{id}/approvals/{aid}", RequireAuth(s, approvalsHandler.HandleDecide))
+
+	// Internal PreToolUse Hook Approval Endpoint (Local IPC)
+	mux.HandleFunc("POST /api/internal/hooks/approval", approvalsHandler.HandleHookApproval)
+
+	// Protected Web Push
+	mux.HandleFunc("GET /api/push/vapid-key", RequireAuth(s, pushHandler.HandleGetVAPIDKey))
+	mux.HandleFunc("POST /api/push/subscribe", RequireAuth(s, pushHandler.HandleSubscribe))
+	mux.HandleFunc("POST /api/push/unsubscribe", RequireAuth(s, pushHandler.HandleUnsubscribe))
+	mux.HandleFunc("POST /api/push/test", RequireAuth(s, pushHandler.HandleTestPush))
+
+	// Protected Git Operations
+	mux.HandleFunc("GET /api/agents/{id}/git/status", RequireAuth(s, gitHandler.HandleStatus))
+	mux.HandleFunc("GET /api/agents/{id}/git/changes", RequireAuth(s, gitHandler.HandleChanges))
+	mux.HandleFunc("GET /api/agents/{id}/git/diff", RequireAuth(s, gitHandler.HandleDiff))
+	mux.HandleFunc("POST /api/agents/{id}/git/stage", RequireAuth(s, gitHandler.HandleStage))
+	mux.HandleFunc("POST /api/agents/{id}/git/unstage", RequireAuth(s, gitHandler.HandleUnstage))
+	mux.HandleFunc("POST /api/agents/{id}/git/stage-hunk", RequireAuth(s, gitHandler.HandleStageHunk))
+	mux.HandleFunc("POST /api/agents/{id}/git/commit", RequireAuth(s, gitHandler.HandleCommit))
+	mux.HandleFunc("POST /api/agents/{id}/git/branch", RequireAuth(s, gitHandler.HandleBranch))
+	mux.HandleFunc("POST /api/agents/{id}/git/push", RequireAuth(s, gitHandler.HandlePush))
+	mux.HandleFunc("POST /api/agents/{id}/git/pull-rebase", RequireAuth(s, gitHandler.HandlePullRebase))
+	mux.HandleFunc("POST /api/agents/{id}/git/pr", RequireAuth(s, gitHandler.HandleCreatePR))
+
 	// Real-time WebSockets
 	mux.HandleFunc("GET /api/events/ws", RequireAuth(s, wsHandler.HandleEventsWS))
 	mux.HandleFunc("GET /api/terminal/ws", RequireAuth(s, wsHandler.HandleTerminalWS))
@@ -127,9 +164,15 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 				return
 			}
 
-			// SPA fallback: serve index.html for client-side routing
-			r.URL.Path = "/"
-			fileServer.ServeHTTP(w, r)
+			// Fallback to index.html for SPA routing
+			indexData, err := fs.ReadFile(webFS, "index.html")
+			if err != nil {
+				http.Error(w, "index.html not found", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(indexData)
 		})
 	}
 
@@ -157,37 +200,30 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	}, nil
 }
 
-func (s *Server) Start(ctx context.Context) error {
-	// Start orchestrator and reconcile running sessions
-	if err := s.orch.Start(ctx); err != nil {
-		s.logger.Error("failed to start orchestrator", "error", err)
-	}
-
-	listener, err := net.Listen("tcp", s.cfg.BindAddr)
-	if err != nil {
-		return err
-	}
-	s.logger.Info("server listening", "bind_addr", s.cfg.BindAddr)
-
-	errCh := make(chan error, 1)
-	go func() {
-		if err := s.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-		close(errCh)
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.httpServer.Shutdown(shutdownCtx)
-		return nil
-	case err := <-errCh:
-		return err
-	}
+func (s *Server) Orchestrator() *orchestrator.Orchestrator {
+	return s.orch
 }
 
 func (s *Server) Handler() http.Handler {
 	return s.httpServer.Handler
+}
+
+func (s *Server) Start(ctx context.Context) error {
+	if err := s.orch.Start(ctx); err != nil {
+		s.logger.Error("failed to start orchestrator", "error", err)
+	}
+
+	s.logger.Info("Starting HTTP server", "addr", s.cfg.BindAddr)
+	err := s.httpServer.ListenAndServe()
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer != nil {
+		return s.httpServer.Shutdown(ctx)
+	}
+	return nil
 }

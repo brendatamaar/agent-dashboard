@@ -266,3 +266,102 @@ func TestIllegalTransitionsFail(t *testing.T) {
 		t.Fatalf("expected error for illegal approval decision in provisioning state")
 	}
 }
+
+func TestStructuredApprovalLifecycle(t *testing.T) {
+	now := time.Now().UTC()
+	manager := NewManagerState(1)
+
+	spec := AgentSpec{
+		ID:           "agent-appr",
+		RepoID:       "repo-1",
+		RepoPath:     "/workspace/repo-1",
+		Harness:      "claude",
+		WorktreePath: "/workspace/repo-1-wt",
+		TmuxSession:  "tmux-appr",
+	}
+
+	manager, _, _ = Step(manager, InputSubmitAgent{Now: now, Spec: spec})
+	manager, _, _ = Step(manager, InputWorktreeReady{Now: now, AgentID: spec.ID, WorktreePath: spec.WorktreePath})
+
+	// 1. Hook requests approval for Bash tool
+	req := ApprovalRequest{
+		ID:       "app-1",
+		AgentID:  spec.ID,
+		ToolName: "Bash",
+		Command:  "npm test",
+	}
+
+	var cmds []Command
+	var err error
+	manager, cmds, err = Step(manager, InputApprovalRequest{Now: now, Request: req})
+	if err != nil {
+		t.Fatalf("InputApprovalRequest failed: %v", err)
+	}
+	if a := manager.Agents[spec.ID]; a.State != StateAwaitingApproval {
+		t.Fatalf("expected StateAwaitingApproval, got %s", a.State)
+	}
+
+	// Verify CmdPersistApproval and CmdNotifyUser
+	var hasPersistAppr, hasNotify bool
+	for _, c := range cmds {
+		if pa, ok := c.(CmdPersistApproval); ok && pa.ID == "app-1" {
+			hasPersistAppr = true
+		}
+		if _, ok := c.(CmdNotifyUser); ok {
+			hasNotify = true
+		}
+	}
+	if !hasPersistAppr || !hasNotify {
+		t.Fatalf("expected CmdPersistApproval and CmdNotifyUser, got %v", cmds)
+	}
+
+	// 2. User approves with Always: true
+	manager, cmds, err = Step(manager, InputApprovalDecision{
+		Now:        now,
+		AgentID:    spec.ID,
+		ApprovalID: "app-1",
+		Approved:   true,
+		Always:     true,
+	})
+	if err != nil {
+		t.Fatalf("InputApprovalDecision failed: %v", err)
+	}
+	if a := manager.Agents[spec.ID]; a.State != StateRunning {
+		t.Fatalf("expected StateRunning after approval, got %s", a.State)
+	}
+
+	var hasResolveAllow bool
+	for _, c := range cmds {
+		if ra, ok := c.(CmdResolveApproval); ok && ra.Action == "allow" {
+			hasResolveAllow = true
+		}
+	}
+	if !hasResolveAllow {
+		t.Fatalf("expected CmdResolveApproval with action allow, got %v", cmds)
+	}
+
+	// 3. Next approval request for same tool (Bash) should auto-allow!
+	req2 := ApprovalRequest{
+		ID:       "app-2",
+		AgentID:  spec.ID,
+		ToolName: "Bash",
+		Command:  "npm run build",
+	}
+	manager, cmds, err = Step(manager, InputApprovalRequest{Now: now, Request: req2})
+	if err != nil {
+		t.Fatalf("InputApprovalRequest 2 failed: %v", err)
+	}
+	// Agent should remain running (not awaiting approval)
+	if a := manager.Agents[spec.ID]; a.State != StateRunning {
+		t.Fatalf("expected StateRunning (auto-allowed), got %s", a.State)
+	}
+	var hasAutoAllow bool
+	for _, c := range cmds {
+		if ra, ok := c.(CmdResolveApproval); ok && ra.ApprovalID == "app-2" && ra.Action == "allow" {
+			hasAutoAllow = true
+		}
+	}
+	if !hasAutoAllow {
+		t.Fatalf("expected auto CmdResolveApproval allow for app-2, got %v", cmds)
+	}
+}

@@ -83,6 +83,11 @@ func CSRFProtectionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method := strings.ToUpper(r.Method)
 		if method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH" {
+			// Internal hook IPC endpoints do not require CSRF token
+			if strings.HasPrefix(r.URL.Path, "/api/internal/") {
+				next.ServeHTTP(w, r)
+				return
+			}
 			// Require custom header which standard browser form submissions cannot forge
 			if r.Header.Get("X-Requested-With") == "" && r.Header.Get("X-CSRF-Token") == "" {
 				writeJSON(w, http.StatusForbidden, map[string]string{
@@ -139,6 +144,10 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 func RecoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
