@@ -98,7 +98,8 @@ export async function createSecret(kind: string, name: string, value: string): P
 }
 
 export async function registerPasskey(): Promise<void> {
-  const options = await apiFetch<any>('/api/auth/passkey/begin-registration', { method: 'POST' });
+  const data = await apiFetch<any>('/api/auth/passkey/begin-registration', { method: 'POST' });
+  const options = data.publicKey || data;
   const attResp = await startRegistration(options);
   await apiFetch('/api/auth/passkey/finish-registration', {
     method: 'POST',
@@ -107,7 +108,8 @@ export async function registerPasskey(): Promise<void> {
 }
 
 export async function loginWithPasskey(): Promise<void> {
-  const options = await apiFetch<any>('/api/auth/passkey/begin-login', { method: 'POST' });
+  const data = await apiFetch<any>('/api/auth/passkey/begin-login', { method: 'POST' });
+  const options = data.publicKey || data;
   const asseResp = await startAuthentication(options);
   await apiFetch('/api/auth/passkey/finish-login', {
     method: 'POST',
