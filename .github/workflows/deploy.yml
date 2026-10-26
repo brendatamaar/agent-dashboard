@@ -1,0 +1,26 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: self-hosted
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run verification & build binary
+        run: |
+          make verify
+
+      - name: Install binary and restart service
+        run: |
+          sudo systemctl stop agent-dashboard
+          sudo cp ./agent-dashboard /usr/local/bin/agent-dashboard
+          sudo systemctl start agent-dashboard
+          sudo systemctl is-active --quiet agent-dashboard
+          echo "agent-dashboard updated and running cleanly!"
