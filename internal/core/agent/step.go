@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -179,6 +180,63 @@ func Step(state ManagerState, in Input) (ManagerState, []Command, error) {
 		}
 		return next, cmds, nil
 
+	case InputApprovalRequest:
+		a, ok := next.Agents[inp.Request.AgentID]
+		if !ok {
+			return state, nil, fmt.Errorf("agent %q not found", inp.Request.AgentID)
+		}
+
+		// Check if this tool is always allowed for this agent
+		if allowedTools, exists := next.AlwaysAllowedTools[a.ID]; exists && inp.Request.ToolName != "" && allowedTools[inp.Request.ToolName] {
+			cmds = append(cmds,
+				CmdResolveApproval{
+					AgentID:    a.ID,
+					ApprovalID: inp.Request.ID,
+					Action:     "allow",
+				},
+				CmdAuditLog{
+					Actor:  "auto-rule",
+					Action: "approval",
+					Target: a.ID,
+					Result: fmt.Sprintf("always_allowed: %s", inp.Request.ToolName),
+				},
+			)
+			return next, cmds, nil
+		}
+
+		if err := ValidateStateTransition(a.State, StateAwaitingApproval); err != nil {
+			return state, nil, err
+		}
+		a.State = StateAwaitingApproval
+		a.UpdatedAt = inp.Now
+		next.Agents[a.ID] = a
+		next.PendingApprovals[inp.Request.ID] = inp.Request
+
+		reqBytes, _ := json.Marshal(inp.Request)
+		bodyText := fmt.Sprintf("Tool %s needs approval", inp.Request.ToolName)
+		if inp.Request.Command != "" {
+			bodyText = fmt.Sprintf("Command: %s", inp.Request.Command)
+		} else if inp.Request.FilePath != "" {
+			bodyText = fmt.Sprintf("File: %s", inp.Request.FilePath)
+		}
+
+		cmds = append(cmds,
+			CmdPersistAgentState{Agent: a},
+			CmdPersistApproval{
+				ID:        inp.Request.ID,
+				AgentID:   a.ID,
+				Request:   string(reqBytes),
+				Decision:  "pending",
+				DecidedAt: nil,
+			},
+			CmdNotifyUser{
+				Title:     fmt.Sprintf("Approval needed: %s", a.ID),
+				Body:      bodyText,
+				TargetURL: fmt.Sprintf("/agents/%s", a.ID),
+			},
+		)
+		return next, cmds, nil
+
 	case InputSendMessage:
 		a, ok := next.Agents[inp.AgentID]
 		if !ok {
@@ -211,16 +269,56 @@ func Step(state ManagerState, in Input) (ManagerState, []Command, error) {
 		cmds = append(cmds, CmdPersistAgentState{Agent: a})
 
 		var respBytes []byte
+		var action string
+		var decisionStr string
+
+		req, hasReq := next.PendingApprovals[inp.ApprovalID]
+		if hasReq {
+			delete(next.PendingApprovals, inp.ApprovalID)
+		}
+
 		if inp.Approved {
 			respBytes = []byte("y\n")
+			action = "allow"
+			if inp.Always && hasReq && req.ToolName != "" {
+				decisionStr = "always_allowed"
+				if next.AlwaysAllowedTools[a.ID] == nil {
+					next.AlwaysAllowedTools[a.ID] = make(map[string]bool)
+				}
+				next.AlwaysAllowedTools[a.ID][req.ToolName] = true
+			} else {
+				decisionStr = "approved"
+			}
 		} else {
 			respBytes = []byte("n\n")
+			action = "deny"
+			decisionStr = "denied"
 		}
-		cmds = append(cmds, CmdSendInput{
-			AgentID:     a.ID,
-			TmuxSession: a.TmuxSession,
-			Input:       respBytes,
-		})
+
+		cmds = append(cmds,
+			CmdResolveApproval{
+				AgentID:    a.ID,
+				ApprovalID: inp.ApprovalID,
+				Action:     action,
+			},
+			CmdPersistApproval{
+				ID:        inp.ApprovalID,
+				AgentID:   a.ID,
+				Decision:  decisionStr,
+				DecidedAt: &inp.Now,
+			},
+			CmdSendInput{
+				AgentID:     a.ID,
+				TmuxSession: a.TmuxSession,
+				Input:       respBytes,
+			},
+			CmdAuditLog{
+				Actor:  "user",
+				Action: "approval",
+				Target: a.ID,
+				Result: decisionStr,
+			},
+		)
 		return next, cmds, nil
 
 	case InputProcessExited:
@@ -249,15 +347,19 @@ func Step(state ManagerState, in Input) (ManagerState, []Command, error) {
 			)
 		} else {
 			a.State = StateFailed
+			errMsg := fmt.Sprintf("Agent exited with code %d", inp.ExitCode)
+			errEv := events.NewErrorEvent(999, inp.Now, errMsg, nil)
 			cmds = append(cmds,
 				CmdPersistAgentState{Agent: a},
+				CmdPersistEvent{AgentID: a.ID, Event: errEv},
 				CmdNotifyUser{
 					Title:     fmt.Sprintf("Agent failed: %s", a.ID),
-					Body:      fmt.Sprintf("Agent exited with non-zero code %d", inp.ExitCode),
+					Body:      errMsg,
 					TargetURL: fmt.Sprintf("/agents/%s", a.ID),
 				},
 			)
 		}
+
 		next.Agents[a.ID] = a
 
 		var queueCmds []Command
@@ -284,6 +386,19 @@ func Step(state ManagerState, in Input) (ManagerState, []Command, error) {
 			a.State = StateStopped
 			a.UpdatedAt = inp.Now
 			next.Agents[a.ID] = a
+
+			// Abort any pending approvals
+			for appID, req := range next.PendingApprovals {
+				if req.AgentID == a.ID {
+					cmds = append(cmds, CmdResolveApproval{
+						AgentID:    a.ID,
+						ApprovalID: appID,
+						Action:     "abort",
+					})
+					delete(next.PendingApprovals, appID)
+				}
+			}
+
 			cmds = append(cmds,
 				CmdKillSession{AgentID: a.ID, TmuxSession: a.TmuxSession},
 				CmdPersistAgentState{Agent: a},
@@ -303,6 +418,17 @@ func Step(state ManagerState, in Input) (ManagerState, []Command, error) {
 		if a.State == StateQueued {
 			next.Queue = removeFromSlice(next.Queue, a.ID)
 		} else if wasActive {
+			// Abort any pending approvals
+			for appID, req := range next.PendingApprovals {
+				if req.AgentID == a.ID {
+					cmds = append(cmds, CmdResolveApproval{
+						AgentID:    a.ID,
+						ApprovalID: appID,
+						Action:     "abort",
+					})
+					delete(next.PendingApprovals, appID)
+				}
+			}
 			cmds = append(cmds, CmdKillSession{AgentID: a.ID, TmuxSession: a.TmuxSession})
 		}
 
@@ -316,6 +442,7 @@ func Step(state ManagerState, in Input) (ManagerState, []Command, error) {
 		}
 		cmds = append(cmds, CmdDeleteAgentRecord{AgentID: a.ID})
 		delete(next.Agents, a.ID)
+		delete(next.AlwaysAllowedTools, a.ID)
 
 		if wasActive {
 			var queueCmds []Command
