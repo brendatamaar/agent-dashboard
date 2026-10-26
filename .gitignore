@@ -1,7 +1,6 @@
-# Binaries
-agent-dashboard
-agent-dashboard.exe
-*.exe
+# Root compiled binary (use leading slash so cmd/agent-dashboard is not ignored)
+/agent-dashboard
+/agent-dashboard.exe
 *.test
 
 # Database & local data

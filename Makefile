@@ -3,24 +3,30 @@ ifeq ($(OS),Windows_NT)
     SHELL := C:/Program Files/Git/bin/sh.exe
 endif
 
-.PHONY: all dev test lint build verify clean
+.PHONY: all dev test lint build verify clean web-deps
 
 all: build
 
-dev:
+web-deps:
+	@if [ ! -d "web/node_modules" ]; then \
+		echo "Installing web dependencies..."; \
+		(cd web && npm install); \
+	fi
+
+dev: web-deps
 	@echo "Starting backend and frontend in dev mode..."
 	cd web && npm run dev &
 	go run ./cmd/agent-dashboard
 
-test:
+test: web-deps
 	go test -v ./internal/core/... ./internal/shell/... ./internal/store/... ./internal/api/...
 	cd web && npm test || true
 
-lint:
+lint: web-deps
 	go vet ./...
 	cd web && npm run lint
 
-build:
+build: web-deps
 	cd web && npm run build
 	go build -o agent-dashboard ./cmd/agent-dashboard
 
