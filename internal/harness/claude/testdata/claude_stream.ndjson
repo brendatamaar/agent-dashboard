@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"test-session-123","model":"claude-sonnet-5-5","tools":["Bash","Edit","Read"]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I am analyzing your codebase."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"call_abc","name":"Bash","input":{"command":"git status"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call_abc","content":"On branch main\nnothing to commit","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"The git workspace is clean and ready."}]}}
+{"type":"result","subtype":"success","result":"Done analyzing repo.","terminal_reason":"completed","total_cost_usd":0.005,"usage":{"input_tokens":120,"output_tokens":45}}

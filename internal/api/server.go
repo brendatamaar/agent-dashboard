@@ -7,16 +7,21 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"agent-dashboard/internal/core/auth"
+	"agent-dashboard/internal/runtime/host"
+	"agent-dashboard/internal/shell/git"
+	"agent-dashboard/internal/shell/orchestrator"
 	"agent-dashboard/internal/store"
 )
 
 type Server struct {
 	cfg        Config
 	store      *store.Store
+	orch       *orchestrator.Orchestrator
 	logger     *slog.Logger
 	httpServer *http.Server
 	mux        *http.ServeMux
@@ -35,6 +40,16 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	telemetryHandler := NewTelemetryHandler(cfg.DataDir)
 	secretsHandler := NewSecretsHandler(s, cfg.MasterPassphrase)
 	auditHandler := NewAuditHandler(s)
+
+	// Shell & Orchestration wiring
+	workspaceDir := filepath.Join(cfg.DataDir, "workspace")
+	gitSvc := git.NewService(workspaceDir)
+	hostRt := host.NewHostRuntime()
+	orch := orchestrator.NewOrchestrator(s, gitSvc, hostRt, secretsHandler, logger, 1)
+
+	reposHandler := NewReposHandler(s, gitSvc, secretsHandler)
+	agentsHandler := NewAgentsHandler(s, orch)
+	wsHandler := NewWSHandler(s, orch)
 
 	// Health check (unauthenticated)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +82,27 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 
 	// Protected Audit Log
 	mux.HandleFunc("GET /api/audit-log", RequireAuth(s, auditHandler.HandleGetLogs))
+
+	// Protected Repositories
+	mux.HandleFunc("GET /api/repos", RequireAuth(s, reposHandler.HandleList))
+	mux.HandleFunc("POST /api/repos", RequireAuth(s, reposHandler.HandleAdd))
+	mux.HandleFunc("GET /api/repos/{id}", RequireAuth(s, reposHandler.HandleGet))
+	mux.HandleFunc("POST /api/repos/{id}/fetch", RequireAuth(s, reposHandler.HandleFetch))
+	mux.HandleFunc("POST /api/repos/{id}/pull", RequireAuth(s, reposHandler.HandlePull))
+	mux.HandleFunc("DELETE /api/repos/{id}", RequireAuth(s, reposHandler.HandleDelete))
+
+	// Protected Agents
+	mux.HandleFunc("GET /api/agents", RequireAuth(s, agentsHandler.HandleList))
+	mux.HandleFunc("POST /api/agents", RequireAuth(s, agentsHandler.HandleCreate))
+	mux.HandleFunc("GET /api/agents/{id}", RequireAuth(s, agentsHandler.HandleGet))
+	mux.HandleFunc("POST /api/agents/{id}/message", RequireAuth(s, agentsHandler.HandleSendMessage))
+	mux.HandleFunc("POST /api/agents/{id}/stop", RequireAuth(s, agentsHandler.HandleStop))
+	mux.HandleFunc("DELETE /api/agents/{id}", RequireAuth(s, agentsHandler.HandleDelete))
+	mux.HandleFunc("GET /api/agents/{id}/events", RequireAuth(s, agentsHandler.HandleGetEvents))
+
+	// Real-time WebSockets
+	mux.HandleFunc("GET /api/events/ws", RequireAuth(s, wsHandler.HandleEventsWS))
+	mux.HandleFunc("GET /api/terminal/ws", RequireAuth(s, wsHandler.HandleTerminalWS))
 
 	// SPA & Static file handling
 	if webFS != nil {
@@ -113,6 +149,7 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	return &Server{
 		cfg:        cfg,
 		store:      s,
+		orch:       orch,
 		logger:     logger,
 		httpServer: httpServer,
 		mux:        mux,
@@ -121,6 +158,11 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 }
 
 func (s *Server) Start(ctx context.Context) error {
+	// Start orchestrator and reconcile running sessions
+	if err := s.orch.Start(ctx); err != nil {
+		s.logger.Error("failed to start orchestrator", "error", err)
+	}
+
 	listener, err := net.Listen("tcp", s.cfg.BindAddr)
 	if err != nil {
 		return err

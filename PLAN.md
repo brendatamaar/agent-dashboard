@@ -32,19 +32,19 @@ Goal: a secure empty shell the user can open from their phone over Tailscale.
 
 Goal: start, watch and stop a Claude Code agent on a repo from the phone, with tmux underneath.
 
-- [ ] **Spike (Claude Code):** read `claude --help` and the current docs for the installed version. Decide the event source for each mode and write it to `docs/adr/0002-claude-events.md`:
+- [x] **Spike (Claude Code):** read `claude --help` and the current docs for the installed version. Decide the event source for each mode and write it to `docs/adr/0002-claude-events.md`:
   - task mode: `claude -p` with streaming JSON output on stdout;
   - interactive mode: the TUI runs inside tmux; events come from hooks and/or by tailing the session transcript file; the raw terminal view is always the fallback.
   Also decide how sessions are resumed (`--resume` or equivalent).
-- [ ] **Spike (auth):** how Claude Code authenticates on a headless server with a Claude subscription token or API key, and where credentials live. Document the setup steps in the README. Remind the user to check provider terms for subscription use on servers.
-- [ ] Core: agent lifecycle state machine and task queue (cap default 1, max 2), with property tests. Normalized event types.
-- [ ] Repos: add by GitHub URL using the fine-grained token (stored encrypted), clone to `~/workspace/<repo>`, list with branch / ahead-behind / dirty state, fetch and pull. Validate repo and branch names.
-- [ ] Worktrees: create `agent/<slug>` worktree per agent from a chosen base branch; remove on delete.
-- [ ] `Runtime` interface plus the `host` driver: tmux session per agent, as user `agentd`.
-- [ ] `Harness` interface plus the `claude` adapter (start, resume, parse events, stop). Fixture tests from recorded real output.
-- [ ] Re-attach on boot: on restart, rediscover running tmux sessions and rebuild state from the database.
-- [ ] API + WebSocket event stream; web terminal (xterm.js) attached to an agent's tmux session; plain host shell.
-- [ ] UI (phone-first): agent cards (needs me, running, done), start-agent form (repo, branch, prompt, mode), agent detail with live view, send message, interrupt, stop, resume, delete.
+- [x] **Spike (auth):** how Claude Code authenticates on a headless server with a Claude subscription token or API key, and where credentials live. Document the setup steps in the README. Remind the user to check provider terms for subscription use on servers.
+- [x] Core: agent lifecycle state machine and task queue (cap default 1, max 2), with property tests. Normalized event types.
+- [x] Repos: add by GitHub URL using the fine-grained token (stored encrypted), clone to `~/workspace/<repo>`, list with branch / ahead-behind / dirty state, fetch and pull. Validate repo and branch names.
+- [x] Worktrees: create `agent/<slug>` worktree per agent from a chosen base branch; remove on delete.
+- [x] `Runtime` interface plus the `host` driver: tmux session per agent, as user `agentd`.
+- [x] `Harness` interface plus the `claude` adapter (start, resume, parse events, stop). Fixture tests from recorded real output.
+- [x] Re-attach on boot: on restart, rediscover running tmux sessions and rebuild state from the database.
+- [x] API + WebSocket event stream; web terminal (xterm.js) attached to an agent's tmux session; plain host shell.
+- [x] UI (phone-first): agent cards (needs me, running, done), start-agent form (repo, branch, prompt, mode), agent detail with live view, send message, interrupt, stop, resume, delete.
 
 **Gate 1:** from the phone the user starts a Claude task on a repo, watches it, sends a follow-up, closes the browser, then attaches to the same session over SSH (`tmux attach`) and sees it still running. Restarting the dashboard does not kill the agent.
 

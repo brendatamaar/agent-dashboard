@@ -38,6 +38,55 @@ export interface SecretMetadata {
   updated_at: string;
 }
 
+export interface Repo {
+  id: string;
+  name: string;
+  remote_url: string;
+  path: string;
+  default_branch: string;
+  current_branch?: string;
+  is_dirty?: boolean;
+  ahead?: number;
+  behind?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AgentState =
+  | 'queued'
+  | 'provisioning'
+  | 'running'
+  | 'awaiting_approval'
+  | 'idle'
+  | 'stopped'
+  | 'done'
+  | 'failed';
+
+export interface Agent {
+  id: string;
+  repo_id: string;
+  harness: string;
+  model: string;
+  runtime: string;
+  mode: 'task' | 'interactive';
+  prompt?: string;
+  branch: string;
+  base_branch?: string;
+  worktree_path: string;
+  tmux_session: string;
+  harness_session_id?: string;
+  state: AgentState;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NormalizedEvent {
+  seq: number;
+  type: 'message' | 'tool_call' | 'tool_result' | 'approval_needed' | 'usage' | 'done' | 'error';
+  timestamp: string;
+  payload: Record<string, any>;
+}
+
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers || {});
   headers.set('X-Requested-With', 'XMLHttpRequest');
@@ -97,6 +146,12 @@ export async function createSecret(kind: string, name: string, value: string): P
   });
 }
 
+export async function deleteSecret(name: string): Promise<void> {
+  await apiFetch(`/api/secrets/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function registerPasskey(): Promise<void> {
   const data = await apiFetch<any>('/api/auth/passkey/begin-registration', { method: 'POST' });
   const options = data.publicKey || data;
@@ -115,4 +170,73 @@ export async function loginWithPasskey(): Promise<void> {
     method: 'POST',
     body: JSON.stringify(asseResp),
   });
+}
+
+// Repositories API
+export async function getRepos(): Promise<Repo[]> {
+  return await apiFetch<Repo[]>('/api/repos');
+}
+
+export async function addRepo(url: string, name?: string): Promise<Repo> {
+  return await apiFetch<Repo>('/api/repos', {
+    method: 'POST',
+    body: JSON.stringify({ url, name }),
+  });
+}
+
+export async function fetchRepo(id: string): Promise<void> {
+  await apiFetch(`/api/repos/${id}/fetch`, { method: 'POST' });
+}
+
+export async function pullRepo(id: string): Promise<void> {
+  await apiFetch(`/api/repos/${id}/pull`, { method: 'POST' });
+}
+
+export async function deleteRepo(id: string): Promise<void> {
+  await apiFetch(`/api/repos/${id}`, { method: 'DELETE' });
+}
+
+// Agents API
+export async function getAgents(): Promise<Agent[]> {
+  return await apiFetch<Agent[]>('/api/agents');
+}
+
+export async function getAgent(id: string): Promise<Agent> {
+  return await apiFetch<Agent>(`/api/agents/${id}`);
+}
+
+export interface CreateAgentInput {
+  repo_id: string;
+  harness: string;
+  model: string;
+  mode: 'task' | 'interactive';
+  prompt: string;
+  base_branch?: string;
+  branch?: string;
+}
+
+export async function createAgent(input: CreateAgentInput): Promise<Agent> {
+  return await apiFetch<Agent>('/api/agents', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function sendAgentMessage(id: string, message: string): Promise<void> {
+  await apiFetch(`/api/agents/${id}/message`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+}
+
+export async function stopAgent(id: string): Promise<void> {
+  await apiFetch(`/api/agents/${id}/stop`, { method: 'POST' });
+}
+
+export async function deleteAgent(id: string): Promise<void> {
+  await apiFetch(`/api/agents/${id}`, { method: 'DELETE' });
+}
+
+export async function getAgentEvents(id: string, afterSeq = 0): Promise<{ seq: number; type: string; payload_json: string }[]> {
+  return await apiFetch(`/api/agents/${id}/events?after_seq=${afterSeq}`);
 }

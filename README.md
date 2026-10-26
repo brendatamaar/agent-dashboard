@@ -93,7 +93,25 @@ AGENTD_RP_ID=your-node.ts.net
 AGENTD_RP_ORIGIN=https://your-node.ts.net
 ```
 
-### 3. Start the Service
+### 3. Claude Code Setup on Headless VPS
+
+To run Claude Code agents from the dashboard, configure authentication on the VPS:
+
+#### Option A: Anthropic API Key (Recommended for automated/unattended workloads)
+Store your Anthropic API Key in the dashboard under Settings -> Secrets as `anthropic_api_key`, or export it in `/etc/agent-dashboard/agent-dashboard.env`:
+```ini
+ANTHROPIC_API_KEY="sk-ant-api..."
+```
+
+#### Option B: Claude Subscription (Pro / Team)
+1. On your local machine with a browser, generate a long-lived auth token:
+   ```bash
+   claude setup-token
+   ```
+2. Save the resulting token in the dashboard encrypted secrets as `claude_token` (or copy credentials to `/home/agentd/.claude/` with `chmod 600`).
+3. **Note on Provider Terms:** Verify Anthropic's current terms of service when using subscription tokens in headless server environments.
+
+### 4. Start the Service
 
 ```bash
 sudo systemctl enable --now agent-dashboard

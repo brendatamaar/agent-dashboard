@@ -129,3 +129,99 @@ func TestStoreFullFlow(t *testing.T) {
 		t.Fatalf("expected latest log first, got %+v", logs[0])
 	}
 }
+
+
+func TestStoreReposAndAgents(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_repo_agent.db")
+
+	s, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer s.Close()
+
+	// 1. Repos
+	repo := &store.Repo{
+		ID:            "repo-1",
+		Name:          "agent-dashboard",
+		RemoteURL:     "https://github.com/brendatama/agent-dashboard.git",
+		Path:          "/workspace/agent-dashboard",
+		DefaultBranch: "main",
+		SettingsJSON:  "{}",
+	}
+	if err := s.CreateRepo(ctx, repo); err != nil {
+		t.Fatalf("CreateRepo error: %v", err)
+	}
+
+	fetchedRepo, err := s.GetRepo(ctx, "repo-1")
+	if err != nil {
+		t.Fatalf("GetRepo error: %v", err)
+	}
+	if fetchedRepo.Name != "agent-dashboard" {
+		t.Fatalf("unexpected repo name: %s", fetchedRepo.Name)
+	}
+
+	repos, err := s.ListRepos(ctx)
+	if err != nil {
+		t.Fatalf("ListRepos error: %v", err)
+	}
+	if len(repos) != 1 {
+		t.Fatalf("expected 1 repo, got %d", len(repos))
+	}
+
+	// 2. Agents
+	agent := &store.AgentRecord{
+		ID:           "agent-1",
+		RepoID:       "repo-1",
+		Harness:      "claude",
+		Model:        "claude-sonnet-5-5",
+		Runtime:      "host",
+		Mode:         "task",
+		Branch:       "agent/test-task",
+		WorktreePath: "/workspace/agent-dashboard-wt-1",
+		TmuxSession:  "tmux-agent-1",
+		State:        "running",
+	}
+	if err := s.CreateAgent(ctx, agent); err != nil {
+		t.Fatalf("CreateAgent error: %v", err)
+	}
+
+	fetchedAgent, err := s.GetAgent(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("GetAgent error: %v", err)
+	}
+	if fetchedAgent.State != "running" {
+		t.Fatalf("unexpected agent state: %s", fetchedAgent.State)
+	}
+
+	agent.State = "done"
+	if err := s.UpdateAgent(ctx, agent); err != nil {
+		t.Fatalf("UpdateAgent error: %v", err)
+	}
+
+	// 3. Events
+	if err := s.AppendEvent(ctx, "agent-1", 1, "message", `{"text":"hello"}`); err != nil {
+		t.Fatalf("AppendEvent error: %v", err)
+	}
+	if err := s.AppendEvent(ctx, "agent-1", 2, "done", `{"result":"success"}`); err != nil {
+		t.Fatalf("AppendEvent error: %v", err)
+	}
+
+	evs, err := s.GetEvents(ctx, "agent-1", 0)
+	if err != nil {
+		t.Fatalf("GetEvents error: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(evs))
+	}
+
+	// Delete agent & repo
+	if err := s.DeleteAgent(ctx, "agent-1"); err != nil {
+		t.Fatalf("DeleteAgent error: %v", err)
+	}
+	if err := s.DeleteRepo(ctx, "repo-1"); err != nil {
+		t.Fatalf("DeleteRepo error: %v", err)
+	}
+}

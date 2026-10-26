@@ -19,7 +19,7 @@ dev: web-deps
 	go run ./cmd/agent-dashboard
 
 test: web-deps
-	go test -v ./internal/core/... ./internal/shell/... ./internal/store/... ./internal/api/...
+	go test -v ./internal/...
 	cd web && npm test || true
 
 lint: web-deps

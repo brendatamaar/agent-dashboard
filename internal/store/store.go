@@ -26,6 +26,9 @@ type Store struct {
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	db, err := sql.Open("sqlite", dsn)
+	if err == nil {
+		db.SetMaxOpenConns(1)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -389,4 +392,205 @@ func (s *Store) GetAuditLogs(ctx context.Context, limit, offset int) ([]AuditEnt
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+
+// Repo represents a managed git repository.
+type Repo struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	RemoteURL     string    `json:"remote_url"`
+	Path          string    `json:"path"`
+	DefaultBranch string    `json:"default_branch"`
+	SettingsJSON  string    `json:"settings_json"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// CreateRepo saves a new repo record.
+func (s *Store) CreateRepo(ctx context.Context, r *Repo) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO repos (id, name, remote_url, path, default_branch, settings_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, r.ID, r.Name, r.RemoteURL, r.Path, r.DefaultBranch, r.SettingsJSON)
+	return err
+}
+
+// GetRepo retrieves a repo by ID.
+func (s *Store) GetRepo(ctx context.Context, id string) (*Repo, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, name, remote_url, path, default_branch, settings_json, created_at, updated_at
+		FROM repos WHERE id = ?
+	`, id)
+	var r Repo
+	err := row.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.Path, &r.DefaultBranch, &r.SettingsJSON, &r.CreatedAt, &r.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// ListRepos returns all tracked repositories.
+func (s *Store) ListRepos(ctx context.Context) ([]Repo, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, remote_url, path, default_branch, settings_json, created_at, updated_at
+		FROM repos ORDER BY name ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []Repo
+	for rows.Next() {
+		var r Repo
+		if err := rows.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.Path, &r.DefaultBranch, &r.SettingsJSON, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
+}
+
+// DeleteRepo removes a repo by ID.
+func (s *Store) DeleteRepo(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM repos WHERE id = ?", id)
+	return err
+}
+
+// AgentRecord represents a persisted agent session.
+type AgentRecord struct {
+	ID               string    `json:"id"`
+	RepoID           string    `json:"repo_id"`
+	Harness          string    `json:"harness"`
+	Model            string    `json:"model"`
+	Runtime          string    `json:"runtime"`
+	Mode             string    `json:"mode"`
+	Branch           string    `json:"branch"`
+	WorktreePath     string    `json:"worktree_path"`
+	TmuxSession      string    `json:"tmux_session"`
+	ContainerID      string    `json:"container_id"`
+	HarnessSessionID string    `json:"harness_session_id"`
+	State            string    `json:"state"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// CreateAgent creates or updates an agent database record.
+func (s *Store) CreateAgent(ctx context.Context, a *AgentRecord) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agents (id, repo_id, harness, model, runtime, mode, branch, worktree_path, tmux_session, container_id, harness_session_id, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET
+			harness_session_id = excluded.harness_session_id,
+			tmux_session = excluded.tmux_session,
+			container_id = excluded.container_id,
+			state = excluded.state,
+			updated_at = CURRENT_TIMESTAMP
+	`, a.ID, a.RepoID, a.Harness, a.Model, a.Runtime, a.Mode, a.Branch, a.WorktreePath, a.TmuxSession, a.ContainerID, a.HarnessSessionID, a.State)
+	return err
+}
+
+// UpdateAgent updates an agent's state and session references.
+func (s *Store) UpdateAgent(ctx context.Context, a *AgentRecord) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agents SET
+			harness_session_id = ?,
+			tmux_session = ?,
+			container_id = ?,
+			state = ?,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, a.HarnessSessionID, a.TmuxSession, a.ContainerID, a.State, a.ID)
+	return err
+}
+
+// GetAgent retrieves an agent by ID.
+func (s *Store) GetAgent(ctx context.Context, id string) (*AgentRecord, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, repo_id, harness, model, runtime, mode, branch, worktree_path, tmux_session, container_id, harness_session_id, state, created_at, updated_at
+		FROM agents WHERE id = ?
+	`, id)
+	var a AgentRecord
+	err := row.Scan(&a.ID, &a.RepoID, &a.Harness, &a.Model, &a.Runtime, &a.Mode, &a.Branch, &a.WorktreePath, &a.TmuxSession, &a.ContainerID, &a.HarnessSessionID, &a.State, &a.CreatedAt, &a.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// ListAgents returns all agents, ordered by updated_at descending.
+func (s *Store) ListAgents(ctx context.Context) ([]AgentRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, repo_id, harness, model, runtime, mode, branch, worktree_path, tmux_session, container_id, harness_session_id, state, created_at, updated_at
+		FROM agents ORDER BY updated_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var agents []AgentRecord
+	for rows.Next() {
+		var a AgentRecord
+		if err := rows.Scan(&a.ID, &a.RepoID, &a.Harness, &a.Model, &a.Runtime, &a.Mode, &a.Branch, &a.WorktreePath, &a.TmuxSession, &a.ContainerID, &a.HarnessSessionID, &a.State, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		agents = append(agents, a)
+	}
+	return agents, rows.Err()
+}
+
+// DeleteAgent removes an agent by ID.
+func (s *Store) DeleteAgent(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM agents WHERE id = ?", id)
+	return err
+}
+
+// EventRecord represents a stored event.
+type EventRecord struct {
+	ID          int64     `json:"id"`
+	AgentID     string    `json:"agent_id"`
+	Seq         int64     `json:"seq"`
+	Type        string    `json:"type"`
+	PayloadJSON string    `json:"payload_json"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// AppendEvent stores a normalized event for an agent.
+func (s *Store) AppendEvent(ctx context.Context, agentID string, seq int64, eventType, payloadJSON string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO events (agent_id, seq, type, payload_json, created_at)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, agentID, seq, eventType, payloadJSON)
+	return err
+}
+
+// GetEvents retrieves all events for an agent with seq > afterSeq.
+func (s *Store) GetEvents(ctx context.Context, agentID string, afterSeq int64) ([]EventRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, agent_id, seq, type, payload_json, created_at
+		FROM events WHERE agent_id = ? AND seq > ?
+		ORDER BY seq ASC
+	`, agentID, afterSeq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []EventRecord
+	for rows.Next() {
+		var e EventRecord
+		if err := rows.Scan(&e.ID, &e.AgentID, &e.Seq, &e.Type, &e.PayloadJSON, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
 }

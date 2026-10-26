@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -99,4 +100,29 @@ func (s *SecretsHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 	_ = s.store.WriteAudit(r.Context(), user.Username, "secret_delete", name, "success")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "name": name})
+}
+
+// DecryptSecret retrieves and decrypts a secret by name.
+func (s *SecretsHandler) DecryptSecret(ctx context.Context, name string) (string, error) {
+	sec, err := s.store.GetSecret(ctx, name)
+	if err != nil {
+		return "", err
+	}
+
+	user, err := s.store.GetUserByUsername(ctx, "admin")
+	if err != nil {
+		return "", err
+	}
+
+	passphrase := s.masterPassphrase
+	if passphrase == "" {
+		passphrase = user.PasswordHash
+	}
+	masterKey := crypto.DeriveKey(passphrase, user.MasterSalt)
+
+	plain, err := crypto.Decrypt(sec.Ciphertext, masterKey)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
 }
