@@ -132,7 +132,7 @@ func (a *AuthHandler) HandleSetup(w http.ResponseWriter, r *http.Request) {
 	// Create initial session for seamless onboarding
 	token, err := a.store.CreateSession(r.Context(), user.ID, a.cfg.SessionDuration)
 	if err == nil {
-		a.setSessionCookie(w, token)
+		a.setSessionCookie(w, r, token)
 	}
 
 	writeJSON(w, http.StatusOK, SetupInitResponse{
@@ -189,7 +189,7 @@ func (a *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.setSessionCookie(w, token)
+	a.setSessionCookie(w, r, token)
 	_ = a.store.WriteAudit(r.Context(), req.Username, "login", "session", "success")
 
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -204,6 +204,7 @@ func (a *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		_ = a.store.DeleteSession(r.Context(), cookie.Value)
 	}
 
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "agentd_session",
 		Value:    "",
@@ -211,8 +212,8 @@ func (a *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		Expires:  time.Unix(0, 0),
 		HttpOnly: true,
-		Secure:   strings.HasPrefix(a.cfg.RPOrigin, "https://"),
-		SameSite: http.SameSiteStrictMode,
+		Secure:   isSecure,
+		SameSite: http.SameSiteLaxMode,
 	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})
@@ -459,7 +460,7 @@ func (a *AuthHandler) HandlePasskeyFinishLogin(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	a.setSessionCookie(w, token)
+	a.setSessionCookie(w, r, token)
 	_ = a.store.WriteAudit(r.Context(), user.Username, "login", "passkey", "success")
 
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -468,7 +469,8 @@ func (a *AuthHandler) HandlePasskeyFinishLogin(w http.ResponseWriter, r *http.Re
 	})
 }
 
-func (a *AuthHandler) setSessionCookie(w http.ResponseWriter, token string) {
+func (a *AuthHandler) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "agentd_session",
 		Value:    token,
@@ -476,8 +478,8 @@ func (a *AuthHandler) setSessionCookie(w http.ResponseWriter, token string) {
 		MaxAge:   int(a.cfg.SessionDuration.Seconds()),
 		Expires:  time.Now().Add(a.cfg.SessionDuration),
 		HttpOnly: true,
-		Secure:   strings.HasPrefix(a.cfg.RPOrigin, "https://"),
-		SameSite: http.SameSiteStrictMode,
+		Secure:   isSecure,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 

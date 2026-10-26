@@ -238,8 +238,11 @@ export default function App() {
         }),
       });
       const me = await getMe();
+      if (!me) {
+        throw new Error('Authentication succeeded on server, but browser session was not established. Ensure cookies are allowed.');
+      }
       setUser(me);
-      if (me) loadDashboardData();
+      loadDashboardData();
     } catch (err: any) {
       setError(err.message);
     }
@@ -459,6 +462,29 @@ export default function App() {
           </div>
 
           {error && <div className="badge badge-danger" style={{ marginBottom: '1rem', width: '100%' }}>{error}</div>}
+
+          {totpSecretBanner && (
+            <div style={{ background: 'rgba(59, 130, 246, 0.1)', border: '1px solid var(--primary)', borderRadius: '6px', padding: '0.75rem', marginBottom: '1.25rem' }}>
+              <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--primary)', marginBottom: '0.25rem' }}>
+                Your TOTP Secret Key:
+              </div>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+                Add this key to Google Authenticator or 1Password to generate 6-digit codes:
+              </p>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <code style={{ flex: 1, padding: '0.375rem', background: 'var(--bg-primary)', borderRadius: '4px', fontSize: '0.75rem', wordBreak: 'break-all' }}>
+                  {totpSecretBanner}
+                </code>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => navigator.clipboard.writeText(totpSecretBanner)}
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+          )}
 
           <div style={{ marginBottom: '1.5rem' }}>
             <button className="btn btn-secondary btn-full" onClick={handlePasskeyLogin} type="button">
