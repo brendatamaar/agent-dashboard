@@ -8,10 +8,8 @@ endif
 all: build
 
 web-deps:
-	@if [ ! -d "web/node_modules" ]; then \
-		echo "Installing web dependencies..."; \
-		(cd web && npm install); \
-	fi
+	@echo "Syncing web dependencies..."
+	cd web && npm install
 
 dev: web-deps
 	@echo "Starting backend and frontend in dev mode..."
