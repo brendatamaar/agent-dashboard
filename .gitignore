@@ -1,0 +1,22 @@
+# Binaries
+agent-dashboard
+agent-dashboard.exe
+*.exe
+*.test
+
+# Database & local data
+*.db
+*.db-wal
+*.db-shm
+.agent-dashboard/
+
+# Frontend dependencies and temp
+web/node_modules/
+node_modules/
+.npm/
+
+# IDE and OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

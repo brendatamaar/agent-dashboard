@@ -1,0 +1,124 @@
+-- 0001_initial_schema.sql
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    totp_secret TEXT NOT NULL DEFAULT '',
+    master_salt BLOB NOT NULL,
+    is_setup_complete INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS passkeys (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    credential_id BLOB NOT NULL UNIQUE,
+    public_key BLOB NOT NULL,
+    attestation_type TEXT NOT NULL,
+    aaguid BLOB NOT NULL,
+    sign_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS secrets (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
+    ciphertext BLOB NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS repos (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    remote_url TEXT NOT NULL,
+    path TEXT NOT NULL,
+    default_branch TEXT NOT NULL DEFAULT 'main',
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    harness TEXT NOT NULL,
+    model TEXT NOT NULL,
+    runtime TEXT NOT NULL DEFAULT 'docker',
+    mode TEXT NOT NULL DEFAULT 'task',
+    branch TEXT NOT NULL,
+    worktree_path TEXT NOT NULL,
+    tmux_session TEXT NOT NULL,
+    container_id TEXT NOT NULL DEFAULT '',
+    harness_session_id TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'queued',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS approvals (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    request_json TEXT NOT NULL,
+    decision TEXT NOT NULL DEFAULT 'pending',
+    decided_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    harness TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+    repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    cron TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_secrets_kind ON secrets(kind);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_agents_state ON agents(state);
+CREATE INDEX IF NOT EXISTS idx_events_agent_id ON events(agent_id, seq);

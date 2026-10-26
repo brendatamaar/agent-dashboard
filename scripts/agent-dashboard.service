@@ -1,0 +1,23 @@
+[Unit]
+Description=agent-dashboard - Personal Self-Hosted Coding Agent Dashboard
+After=network.target tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=simple
+User=agentd
+Group=agentd
+WorkingDirectory=/var/lib/agent-dashboard
+EnvironmentFile=-/etc/agent-dashboard/agent-dashboard.env
+ExecStart=/usr/local/bin/agent-dashboard -data-dir /var/lib/agent-dashboard
+Restart=on-failure
+RestartSec=5s
+
+# Security sandboxing
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

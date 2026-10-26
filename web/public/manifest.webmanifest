@@ -1,0 +1,17 @@
+{
+  "name": "Agent Dashboard",
+  "short_name": "AgentDash",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090d16",
+  "theme_color": "#090d16",
+  "description": "Personal self-hosted dashboard for managing coding agents and git workflows",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
