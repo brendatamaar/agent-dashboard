@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"agent-dashboard/internal/runtime"
@@ -20,13 +21,16 @@ func runRuntimeContractTest(t *testing.T, r runtime.Runtime) {
 	// 2. Create session
 	spec := runtime.RuntimeSpec{
 		SessionName: "test-session-1",
-		WorkDir:     "/tmp",
-		Command:     []string{"echo", "hello"},
+		WorkDir:     os.TempDir(),
+		Command:     []string{"sleep", "10"},
 	}
 	handle, err := r.Create(ctx, spec)
 	if err != nil {
 		t.Fatalf("Create session error: %v", err)
 	}
+	defer func() {
+		_ = r.Destroy(ctx, handle)
+	}()
 	if string(handle) != "test-session-1" {
 		t.Fatalf("unexpected handle %s", handle)
 	}
