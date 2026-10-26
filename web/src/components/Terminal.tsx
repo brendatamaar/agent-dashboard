@@ -52,7 +52,7 @@ export const Terminal: React.FC<TerminalProps> = ({ agentId, onClose }) => {
       }
     };
 
-    term.onData((data) => {
+    term.onData((data: string) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(data));
       }
