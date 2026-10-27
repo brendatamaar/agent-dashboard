@@ -31,6 +31,7 @@ type CreateAgentRequest struct {
 	Prompt       string `json:"prompt"`
 	BaseBranch   string `json:"base_branch"`
 	CustomBranch string `json:"branch"`
+	Runtime      string `json:"runtime"`
 }
 
 func (h *AgentsHandler) HandleList(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +107,7 @@ func (h *AgentsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		req.Prompt,
 		req.BaseBranch,
 		req.CustomBranch,
+		req.Runtime,
 	)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

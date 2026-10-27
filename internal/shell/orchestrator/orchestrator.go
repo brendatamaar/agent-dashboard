@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -274,6 +275,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 func (o *Orchestrator) SubmitAgent(
 	ctx context.Context,
 	repoID, harnessName, model, mode, prompt, customBranch, baseBranch string,
+	runtimeOpt ...string,
 ) (*agent.Agent, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -302,6 +304,9 @@ func (o *Orchestrator) SubmitAgent(
 				autoApprove = true
 			}
 		}
+	}
+	if len(runtimeOpt) > 0 && runtimeOpt[0] != "" {
+		rtName = runtimeOpt[0]
 	}
 
 	agentID := fmt.Sprintf("agent-%d", time.Now().UnixNano())
@@ -693,13 +698,50 @@ func (o *Orchestrator) startAgentSession(ctx context.Context, c agent.CmdStartSe
 		cmdArgs = harn.StartCommand(spec)
 	}
 
-	// Fetch credentials if available
+	// Fetch credentials and environment variables
 	env := make(map[string]string)
 	if o.decryptor != nil {
-		if token, err := o.decryptor.DecryptSecret(ctx, "claude_token"); err == nil && token != "" {
-			env["ANTHROPIC_AUTH_TOKEN"] = token
-		} else if apiKey, err := o.decryptor.DecryptSecret(ctx, "anthropic_api_key"); err == nil && apiKey != "" {
-			env["ANTHROPIC_API_KEY"] = apiKey
+		secretKeys := []string{
+			"claude_token", "anthropic_auth_token", "ANTHROPIC_AUTH_TOKEN",
+			"anthropic_api_key", "ANTHROPIC_API_KEY",
+			"AGY_TOKEN", "agy_token",
+			"ANTIGRAVITY_TOKEN", "antigravity_token",
+			"ANTIGRAVITY_API_KEY", "antigravity_api_key",
+			"GEMINI_API_KEY", "gemini_api_key",
+			"OPENAI_API_KEY", "openai_api_key",
+			"MUSE_API_KEY", "muse_api_key",
+			"MUSE_TOKEN", "muse_token",
+		}
+		for _, k := range secretKeys {
+			if val, err := o.decryptor.DecryptSecret(ctx, k); err == nil && val != "" {
+				env[k] = val
+				switch strings.ToLower(k) {
+				case "claude_token", "anthropic_auth_token":
+					env["ANTHROPIC_AUTH_TOKEN"] = val
+				case "anthropic_api_key":
+					env["ANTHROPIC_API_KEY"] = val
+				case "agy_token", "antigravity_token":
+					env["AGY_TOKEN"] = val
+				case "antigravity_api_key":
+					env["ANTIGRAVITY_API_KEY"] = val
+				case "gemini_api_key":
+					env["GEMINI_API_KEY"] = val
+				case "openai_api_key":
+					env["OPENAI_API_KEY"] = val
+				case "muse_api_key", "muse_token":
+					env["MUSE_API_KEY"] = val
+				}
+			}
+		}
+	}
+	if a, ok := o.mgrState.Agents[c.AgentID]; ok && a.RepoID != "" {
+		if r, err := o.store.GetRepo(ctx, a.RepoID); err == nil && r.SettingsJSON != "" {
+			var repoSet repo.RepoSettings
+			if err := json.Unmarshal([]byte(r.SettingsJSON), &repoSet); err == nil {
+				for k, v := range repoSet.EnvVars {
+					env[k] = v
+				}
+			}
 		}
 	}
 

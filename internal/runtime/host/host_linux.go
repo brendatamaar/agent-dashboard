@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -57,11 +58,32 @@ func (h *HostRuntime) Create(ctx context.Context, spec runtime.RuntimeSpec) (run
 	}
 
 	cmd := exec.CommandContext(ctx, h.tmuxBinary, args...)
-	if len(spec.Env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range spec.Env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	// Ensure complete environment including ~/.local/bin and /usr/local/bin in PATH
+	envMap := make(map[string]string)
+	for _, e := range os.Environ() {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
 		}
+	}
+	curPath := envMap["PATH"]
+	homeDir, _ := os.UserHomeDir()
+	extraPaths := []string{"/usr/local/bin", "/usr/bin", "/bin"}
+	if homeDir != "" {
+		extraPaths = append([]string{filepath.Join(homeDir, ".local", "bin")}, extraPaths...)
+	}
+	for _, p := range extraPaths {
+		if !strings.Contains(curPath, p) {
+			curPath = p + ":" + curPath
+		}
+	}
+	envMap["PATH"] = curPath
+	for k, v := range spec.Env {
+		envMap[k] = v
+	}
+	cmd.Env = make([]string, 0, len(envMap))
+	for k, v := range envMap {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
 	var stderr bytes.Buffer
