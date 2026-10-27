@@ -97,6 +97,8 @@ func (r *Registry) UpdateHarness(ctx context.Context, name string, executor func
 		updateCmd = []string{"npm", "update", "-g", "@google/gemini-cli"}
 	case "muse":
 		return "Muse Code self-update is managed via platform installer", nil
+	case "antigravity":
+		return "Antigravity CLI is managed via https://antigravity.google/cli/install.sh", nil
 	default:
 		return "", fmt.Errorf("no update command configured for %s", name)
 	}

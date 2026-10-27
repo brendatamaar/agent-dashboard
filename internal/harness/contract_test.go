@@ -27,7 +27,9 @@ func RunHarnessContractTests(t *testing.T, h harness.Harness) {
 	if len(startCmd) == 0 {
 		t.Fatalf("[%s] StartCommand(task) returned empty slice", h.Name())
 	}
-	if startCmd[0] != h.Name() && !strings.Contains(startCmd[0], h.Name()) {
+	isMatchingBinary := startCmd[0] == h.Name() || strings.Contains(startCmd[0], h.Name()) ||
+		(h.Name() == "antigravity" && (startCmd[0] == "agy" || strings.Contains(startCmd[0], "agy")))
+	if !isMatchingBinary {
 		t.Errorf("[%s] StartCommand should invoke harness binary, got %v", h.Name(), startCmd[0])
 	}
 
@@ -50,12 +52,13 @@ func RunHarnessContractTests(t *testing.T, h harness.Harness) {
 		t.Fatalf("[%s] Respond() returned empty bytes", h.Name())
 	}
 
-	// ParseEvents on empty reader should terminate cleanly without panic
-	ctx := context.Background()
+	// Parser smoke test with empty reader
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	evCh, errCh := h.ParseEvents(ctx, strings.NewReader(""))
 	for range evCh {
 	}
 	if err := <-errCh; err != nil {
-		t.Fatalf("[%s] ParseEvents on empty input returned unexpected error: %v", h.Name(), err)
+		t.Fatalf("[%s] ParseEvents returned error on empty stream: %v", h.Name(), err)
 	}
 }
