@@ -1,6 +1,8 @@
 package agent_test
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,5 +199,31 @@ func TestCancelQueuedAgent(t *testing.T) {
 	}
 	if len(mgr.Queue) != 0 {
 		t.Fatalf("expected queue to be empty after cancel, got %v", mgr.Queue)
+	}
+}
+
+func TestAgentJSONSerialization(t *testing.T) {
+	a := agent.Agent{
+		ID:            "agent-123",
+		RepoID:        "repo-456",
+		State:         agent.StateQueued,
+		FailureReason: "oom_killed",
+		AutoApprove:   true,
+	}
+
+	b, err := json.Marshal(a)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	js := string(b)
+	if !strings.Contains(js, `"id":"agent-123"`) {
+		t.Fatalf("expected JSON to contain '\"id\":\"agent-123\"', got %s", js)
+	}
+	if !strings.Contains(js, `"repo_id":"repo-456"`) {
+		t.Fatalf("expected JSON to contain '\"repo_id\":\"repo-456\"', got %s", js)
+	}
+	if !strings.Contains(js, `"state":"queued"`) {
+		t.Fatalf("expected JSON to contain '\"state\":\"queued\"', got %s", js)
 	}
 }

@@ -85,25 +85,25 @@ type AgentSpec struct {
 }
 
 type Agent struct {
-	ID               string
-	RepoID           string
-	RepoPath         string
-	Harness          string
-	Model            string
-	Runtime          string
-	Mode             string
-	Prompt           string
-	Branch           string
-	BaseBranch       string
-	WorktreePath     string
-	TmuxSession      string
-	HarnessSessionID string
-	State            State
-	ExitCode         *int
-	FailureReason    string // e.g. "oom_killed", "exit_error", "worktree_failed"
-	AutoApprove      bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID               string    `json:"id"`
+	RepoID           string    `json:"repo_id"`
+	RepoPath         string    `json:"repo_path"`
+	Harness          string    `json:"harness"`
+	Model            string    `json:"model"`
+	Runtime          string    `json:"runtime"`
+	Mode             string    `json:"mode"`
+	Prompt           string    `json:"prompt"`
+	Branch           string    `json:"branch"`
+	BaseBranch       string    `json:"base_branch"`
+	WorktreePath     string    `json:"worktree_path"`
+	TmuxSession      string    `json:"tmux_session"`
+	HarnessSessionID string    `json:"harness_session_id"`
+	State            State     `json:"state"`
+	ExitCode         *int      `json:"exit_code,omitempty"`
+	FailureReason    string    `json:"failure_reason,omitempty"`
+	AutoApprove      bool      `json:"auto_approve"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type ApprovalRequest struct {
