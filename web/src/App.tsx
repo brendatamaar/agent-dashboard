@@ -108,7 +108,7 @@ export default function App() {
   const [startRepoId, setStartRepoId] = useState('');
   const [startPrompt, setStartPrompt] = useState('');
   const [startMode, setStartMode] = useState<'task' | 'interactive'>('task');
-  const [startModel, setStartModel] = useState('claude-sonnet-5-5');
+  const [startModel, setStartModel] = useState('claude-3-7-sonnet-20250219');
   const [startBaseBranch, setStartBaseBranch] = useState('');
   const [startCustomBranch, setStartCustomBranch] = useState('');
 
@@ -1373,6 +1373,29 @@ export default function App() {
               </div>
 
               <div className="input-group">
+                <label className="input-label">Harness</label>
+                <select
+                  className="input-control"
+                  value={startHarness}
+                  onChange={(e) => {
+                    const h = e.target.value;
+                    setStartHarness(h);
+                    if (h === 'claude') setStartModel('claude-3-7-sonnet-20250219');
+                    else if (h === 'antigravity') setStartModel('gemini-2.5-pro');
+                    else if (h === 'gemini') setStartModel('gemini-2.5-pro');
+                    else if (h === 'codex') setStartModel('o3-mini');
+                    else if (h === 'muse') setStartModel('muse-1');
+                  }}
+                >
+                  <option value="claude">Claude Code (Anthropic)</option>
+                  <option value="antigravity">Google Antigravity (agy)</option>
+                  <option value="gemini">Gemini CLI (Google AI Studio)</option>
+                  <option value="codex">Codex CLI (OpenAI)</option>
+                  <option value="muse">Muse Code (Meta)</option>
+                </select>
+              </div>
+
+              <div className="input-group">
                 <label className="input-label">Mode</label>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
@@ -1399,9 +1422,37 @@ export default function App() {
                   value={startModel}
                   onChange={(e) => setStartModel(e.target.value)}
                 >
-                  <option value="claude-sonnet-5-5">Claude 3.5 Sonnet (Default)</option>
-                  <option value="claude-opus-4">Claude 3 Opus</option>
-                  <option value="claude-haiku-3-5">Claude 3.5 Haiku</option>
+                  {startHarness === 'claude' && (
+                    <>
+                      <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet (Default)</option>
+                      <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
+                      <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku</option>
+                    </>
+                  )}
+                  {startHarness === 'antigravity' && (
+                    <>
+                      <option value="gemini-2.5-pro">Gemini 2.5 Pro (Default)</option>
+                      <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                      <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                    </>
+                  )}
+                  {startHarness === 'gemini' && (
+                    <>
+                      <option value="gemini-2.5-pro">Gemini 2.5 Pro (Default)</option>
+                      <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                    </>
+                  )}
+                  {startHarness === 'codex' && (
+                    <>
+                      <option value="o3-mini">o3-mini (Default)</option>
+                      <option value="gpt-4o">GPT-4o</option>
+                    </>
+                  )}
+                  {startHarness === 'muse' && (
+                    <>
+                      <option value="muse-1">muse-1 (Default)</option>
+                    </>
+                  )}
                 </select>
               </div>
 
