@@ -108,6 +108,7 @@ export default function App() {
   const [startRepoId, setStartRepoId] = useState('');
   const [startPrompt, setStartPrompt] = useState('');
   const [startMode, setStartMode] = useState<'task' | 'interactive'>('task');
+  const [startRuntime, setStartRuntime] = useState<'docker' | 'host'>('host');
   const [startModel, setStartModel] = useState('sonnet');
   const [startBaseBranch, setStartBaseBranch] = useState('');
   const [startCustomBranch, setStartCustomBranch] = useState('');
@@ -396,6 +397,7 @@ export default function App() {
         prompt: startPrompt,
         base_branch: startBaseBranch,
         branch: startCustomBranch,
+        runtime: startRuntime,
       };
       const newAgent = await createAgent(input);
       setAgents((prev) => [newAgent, ...prev]);
@@ -836,13 +838,16 @@ export default function App() {
               <div>{renderStateBadge(selectedAgent.state, selectedAgent.failure_reason)}</div>
             </div>
 
-            {selectedAgent.failure_reason === 'oom_killed' && (
+            {selectedAgent.state === 'failed' && (
               <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: 8, color: '#f87171', marginBottom: '0.75rem', fontSize: '0.8125rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontWeight: 600, marginBottom: '0.25rem' }}>
-                  <AlertTriangle style={{ width: 16, height: 16 }} /> Agent Process OOM Killed
+                  <AlertTriangle style={{ width: 16, height: 16 }} />
+                  {selectedAgent.failure_reason === 'oom_killed' ? 'Agent Process OOM Killed' : 'Agent Launch Failed'}
                 </div>
-                <p style={{ margin: 0, fontSize: '0.75rem' }}>
-                  The sandbox container exceeded its 700 MB RAM limit. Try running in task mode with smaller prompts or fewer concurrent files.
+                <p style={{ margin: 0, fontSize: '0.75rem', wordBreak: 'break-all' }}>
+                  {selectedAgent.failure_reason === 'oom_killed'
+                    ? 'The sandbox container exceeded its 700 MB RAM limit. Try running in task mode with smaller prompts or fewer concurrent files.'
+                    : (selectedAgent.failure_reason || 'An unexpected error occurred while starting the agent.')}
                 </p>
               </div>
             )}
@@ -1393,6 +1398,31 @@ export default function App() {
                   <option value="codex">Codex CLI (OpenAI)</option>
                   <option value="muse">Muse Code (Meta)</option>
                 </select>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Runtime Isolation</label>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button
+                    type="button"
+                    className={`btn btn-full ${startRuntime === 'host' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setStartRuntime('host')}
+                  >
+                    Host VPS (Direct)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-full ${startRuntime === 'docker' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setStartRuntime('docker')}
+                  >
+                    Docker (Sandbox)
+                  </button>
+                </div>
+                <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                  {startRuntime === 'host'
+                    ? 'Runs directly via tmux on VPS host using host tools (agy, claude, etc.)'
+                    : 'Runs in an isolated container sandbox (requires Docker and worker image)'}
+                </div>
               </div>
 
               <div className="input-group">

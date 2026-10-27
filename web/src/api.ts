@@ -241,6 +241,7 @@ export interface CreateAgentInput {
   prompt: string;
   base_branch?: string;
   branch?: string;
+  runtime?: 'docker' | 'host';
 }
 
 export async function createAgent(input: CreateAgentInput): Promise<Agent> {
