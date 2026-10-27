@@ -1,0 +1,8 @@
+{"type":"init","session_id":"agy-sess-1001","model":"gemini-2.5-pro"}
+{"type":"content","role":"model","text":"I am reviewing the repository with Antigravity."}
+{"type":"tool_call","call_id":"agy_call_1","name":"read_file","args":{"path":"README.md"}}
+{"type":"tool_response","call_id":"agy_call_1","output":"# Agent Dashboard"}
+{"type":"subagent_started","subagent_id":"sub-agy-1","subagent_type":"researcher","prompt":"Find all endpoints","parent_agent_id":"agy-sess-1001"}
+{"type":"subagent_finished","subagent_id":"sub-agy-1","result":"Found 14 endpoints","success":true}
+{"type":"usage","prompt_tokens":180,"completion_tokens":45,"total_tokens":225}
+{"type":"finish","status":"success","summary":"Review completed successfully."}

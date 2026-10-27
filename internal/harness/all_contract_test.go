@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"agent-dashboard/internal/harness"
+	"agent-dashboard/internal/harness/antigravity"
 	"agent-dashboard/internal/harness/claude"
 	"agent-dashboard/internal/harness/codex"
 	"agent-dashboard/internal/harness/gemini"
@@ -16,6 +17,7 @@ func TestAllHarnessesContract(t *testing.T) {
 		codex.NewAdapter(),
 		gemini.NewAdapter(),
 		muse.NewAdapter(),
+		antigravity.NewAdapter(),
 	}
 
 	for _, h := range harnesses {
@@ -31,12 +33,13 @@ func TestHarnessRegistry(t *testing.T) {
 	reg.Register(codex.NewAdapter())
 	reg.Register(gemini.NewAdapter())
 	reg.Register(muse.NewAdapter())
+	reg.Register(antigravity.NewAdapter())
 
-	if len(reg.All()) != 4 {
-		t.Fatalf("expected 4 harnesses in registry, got %d", len(reg.All()))
+	if len(reg.All()) != 5 {
+		t.Fatalf("expected 5 harnesses in registry, got %d", len(reg.All()))
 	}
 
-	for _, name := range []string{"claude", "codex", "gemini", "muse"} {
+	for _, name := range []string{"claude", "codex", "gemini", "muse", "antigravity"} {
 		h, ok := reg.Get(name)
 		if !ok || h.Name() != name {
 			t.Fatalf("expected to find %s in registry", name)

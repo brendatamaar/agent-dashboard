@@ -46,6 +46,8 @@ export const HarnessManager: React.FC<{ onNotify?: (msg: string) => void }> = ({
         return 'Gemini CLI';
       case 'muse':
         return 'Muse Code';
+      case 'antigravity':
+        return 'Google Antigravity (agy)';
       default:
         return name;
     }
@@ -98,22 +100,22 @@ export const HarnessManager: React.FC<{ onNotify?: (msg: string) => void }> = ({
                 Auth Status:{' '}
                 {h.auth_status?.logged_in ? (
                   <span style={{ color: '#34d399', fontWeight: 500 }}>
-                    Active ({h.auth_status.auth_method || 'authenticated'})
+                    {h.auth_status.auth_method || 'Logged in'} {h.auth_status.email ? `(${h.auth_status.email})` : ''}
                   </span>
                 ) : (
-                  <span style={{ color: '#f59e0b', fontWeight: 500 }}>Unauthenticated / Key required</span>
+                  <span style={{ color: '#f87171' }}>Not logged in</span>
                 )}
               </div>
             </div>
 
             <button
-              className="btn btn-secondary btn-full"
-              style={{ fontSize: '0.75rem', padding: '0.375rem 0.5rem' }}
+              className="btn btn-secondary"
+              style={{ width: '100%', fontSize: '0.8125rem', padding: '0.375rem 0.5rem' }}
               onClick={() => handleUpdate(h.name)}
               disabled={updating === h.name}
             >
-              <Download style={{ width: 12, height: 12 }} />
-              {updating === h.name ? 'Updating...' : 'Update CLI'}
+              <Download style={{ width: 14, height: 14 }} className={updating === h.name ? 'spin' : ''} />
+              {updating === h.name ? 'Updating...' : 'Update Harness'}
             </button>
           </div>
         ))}

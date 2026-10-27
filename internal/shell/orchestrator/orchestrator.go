@@ -19,6 +19,7 @@ import (
 	"agent-dashboard/internal/harness/codex"
 	"agent-dashboard/internal/harness/gemini"
 	"agent-dashboard/internal/harness/muse"
+	"agent-dashboard/internal/harness/antigravity"
 	"agent-dashboard/internal/runtime"
 	"agent-dashboard/internal/shell/git"
 	"agent-dashboard/internal/shell/notifier"
@@ -104,18 +105,21 @@ func NewOrchestrator(
 	codexAdapter := codex.NewAdapter()
 	geminiAdapter := gemini.NewAdapter()
 	museAdapter := muse.NewAdapter()
+	antigravityAdapter := antigravity.NewAdapter()
 
 	harnessReg := harness.NewRegistry()
 	harnessReg.Register(claudeAdapter)
 	harnessReg.Register(codexAdapter)
 	harnessReg.Register(geminiAdapter)
 	harnessReg.Register(museAdapter)
+	harnessReg.Register(antigravityAdapter)
 
 	harnesses := map[string]harness.Harness{
 		"claude": claudeAdapter,
 		"codex":  codexAdapter,
 		"gemini": geminiAdapter,
 		"muse":   museAdapter,
+		"antigravity": antigravityAdapter,
 	}
 	runtimes := make(map[string]runtime.Runtime)
 	if rt != nil {

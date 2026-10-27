@@ -1412,7 +1412,7 @@ export default function App() {
                   rows={4}
                   value={startPrompt}
                   onChange={(e) => setStartPrompt(e.target.value)}
-                  placeholder="Describe what you want Claude Code to do..."
+                  placeholder="Describe what you want the agent to do..."
                   required
                 />
               </div>

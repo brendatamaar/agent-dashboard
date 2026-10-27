@@ -327,6 +327,7 @@ export const AutomationPanel: React.FC<AutomationPanelProps> = ({ repos, onLaunc
                   <option value="codex">Codex CLI</option>
                   <option value="gemini">Gemini CLI</option>
                   <option value="muse">Muse Code</option>
+                  <option value="antigravity">Google Antigravity (agy)</option>
                 </select>
               </div>
 
