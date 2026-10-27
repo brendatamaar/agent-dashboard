@@ -8,13 +8,15 @@ import (
 type EventType string
 
 const (
-	EventMessage        EventType = "message"
-	EventToolCall       EventType = "tool_call"
-	EventToolResult     EventType = "tool_result"
-	EventApprovalNeeded EventType = "approval_needed"
-	EventUsage          EventType = "usage"
-	EventDone           EventType = "done"
-	EventError          EventType = "error"
+	EventMessage          EventType = "message"
+	EventToolCall         EventType = "tool_call"
+	EventToolResult       EventType = "tool_result"
+	EventApprovalNeeded   EventType = "approval_needed"
+	EventUsage            EventType = "usage"
+	EventDone             EventType = "done"
+	EventError            EventType = "error"
+	EventSubagentStarted  EventType = "subagent_started"
+	EventSubagentFinished EventType = "subagent_finished"
 )
 
 type NormalizedEvent struct {
@@ -117,6 +119,33 @@ func NewErrorEvent(seq int64, t time.Time, message string, details any) Normaliz
 		Payload: map[string]any{
 			"message": message,
 			"details": details,
+		},
+	}
+}
+
+func NewSubagentStartedEvent(seq int64, t time.Time, subagentID, subagentType, prompt, parentAgentID string) NormalizedEvent {
+	return NormalizedEvent{
+		Seq:       seq,
+		Type:      EventSubagentStarted,
+		Timestamp: t,
+		Payload: map[string]any{
+			"subagent_id":     subagentID,
+			"subagent_type":   subagentType,
+			"prompt":          prompt,
+			"parent_agent_id": parentAgentID,
+		},
+	}
+}
+
+func NewSubagentFinishedEvent(seq int64, t time.Time, subagentID, result string, success bool) NormalizedEvent {
+	return NormalizedEvent{
+		Seq:       seq,
+		Type:      EventSubagentFinished,
+		Timestamp: t,
+		Payload: map[string]any{
+			"subagent_id": subagentID,
+			"result":      result,
+			"success":     success,
 		},
 	}
 }

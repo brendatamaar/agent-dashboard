@@ -1,0 +1,8 @@
+{"type":"session_start","session_id":"muse-sess-555","model":"meta-code-2"}
+{"type":"assistant_message","text":"Analyzing codebase with Muse Code."}
+{"type":"tool_execution","tool":"shell","input":{"cmd":"git branch"}}
+{"type":"tool_output","output":"* main"}
+{"type":"subagent_started","subagent_id":"sub-muse-1","subagent_type":"test-runner","prompt":"run unit tests","parent_agent_id":"muse-sess-555"}
+{"type":"subagent_finished","subagent_id":"sub-muse-1","result":"all tests passed","success":true}
+{"type":"token_usage","input_tokens":500,"output_tokens":120}
+{"type":"session_end","outcome":"completed","message":"Code changes completed."}

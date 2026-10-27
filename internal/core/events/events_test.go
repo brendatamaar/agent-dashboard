@@ -40,4 +40,20 @@ func TestNormalizedEventHelpers(t *testing.T) {
 	if done.Type != EventDone {
 		t.Fatalf("expected done type, got %s", done.Type)
 	}
+
+	subStart := NewSubagentStartedEvent(5, now, "sub-1", "researcher", "find bugs", "parent-1")
+	if subStart.Type != EventSubagentStarted {
+		t.Fatalf("expected subagent_started type, got %s", subStart.Type)
+	}
+	if subStart.Payload["subagent_id"] != "sub-1" || subStart.Payload["parent_agent_id"] != "parent-1" {
+		t.Fatalf("unexpected subagent_started payload: %v", subStart.Payload)
+	}
+
+	subFinish := NewSubagentFinishedEvent(6, now, "sub-1", "found 2 bugs", true)
+	if subFinish.Type != EventSubagentFinished {
+		t.Fatalf("expected subagent_finished type, got %s", subFinish.Type)
+	}
+	if subFinish.Payload["success"] != true {
+		t.Fatalf("unexpected subagent_finished payload: %v", subFinish.Payload)
+	}
 }

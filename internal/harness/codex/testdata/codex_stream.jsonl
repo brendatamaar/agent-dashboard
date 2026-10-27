@@ -1,0 +1,8 @@
+{"type":"thread_started","thread_id":"codex-thread-101","model":"gpt-5.5"}
+{"type":"item_added","item":{"type":"message","role":"assistant","content":[{"type":"text","text":"Starting review of PR changes."}]}}
+{"type":"item_added","item":{"type":"function_call","call_id":"call_codex_1","name":"shell","arguments":"{\"command\":\"git status\"}"}}
+{"type":"item_added","item":{"type":"function_call_output","call_id":"call_codex_1","output":"clean working tree"}}
+{"type":"subagent_started","subagent_id":"sub-codex-1","subagent_type":"reviewer","prompt":"inspect auth code","parent_agent_id":"codex-thread-101"}
+{"type":"subagent_finished","subagent_id":"sub-codex-1","result":"all clear","success":true}
+{"type":"usage","usage":{"input_tokens":350,"output_tokens":80},"cost_usd":0.012}
+{"type":"turn_completed","result":"Analysis completed successfully"}

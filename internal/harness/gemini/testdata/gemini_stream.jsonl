@@ -1,0 +1,8 @@
+{"type":"init","session_id":"gemini-sess-999","model":"gemini-2.5-pro"}
+{"type":"content","role":"model","text":"I will inspect the database schema."}
+{"type":"tool_call","call_id":"gem_call_1","name":"query_db","args":{"sql":"SELECT count(*) FROM repos;"}}
+{"type":"tool_response","call_id":"gem_call_1","output":"10 repos found"}
+{"type":"subagent_started","subagent_id":"sub-gem-1","subagent_type":"analyzer","prompt":"check schema indexes","parent_agent_id":"gemini-sess-999"}
+{"type":"subagent_finished","subagent_id":"sub-gem-1","result":"all indexes present","success":true}
+{"type":"usage","prompt_tokens":220,"completion_tokens":60,"total_tokens":280}
+{"type":"finish","status":"success","summary":"Database inspection complete."}

@@ -66,6 +66,8 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	approvalsHandler := NewApprovalsHandler(s, orch)
 	pushHandler := NewPushHandler(s, pushNotifier)
 	gitHandler := NewGitHandler(s, gitSvc, orch, secretsHandler)
+	automationHandler := NewAutomationHandler(s, orch)
+	subagentsHandler := NewSubagentsHandler(s)
 
 	// Health check (unauthenticated)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +147,34 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	mux.HandleFunc("POST /api/agents/{id}/git/pull-rebase", RequireAuth(s, gitHandler.HandlePullRebase))
 	mux.HandleFunc("POST /api/agents/{id}/git/pr", RequireAuth(s, gitHandler.HandleCreatePR))
 
+	// Protected Templates
+	mux.HandleFunc("GET /api/templates", RequireAuth(s, automationHandler.HandleListTemplates))
+	mux.HandleFunc("POST /api/templates", RequireAuth(s, automationHandler.HandleCreateTemplate))
+	mux.HandleFunc("GET /api/templates/{id}", RequireAuth(s, automationHandler.HandleGetTemplate))
+	mux.HandleFunc("PUT /api/templates/{id}", RequireAuth(s, automationHandler.HandleUpdateTemplate))
+	mux.HandleFunc("DELETE /api/templates/{id}", RequireAuth(s, automationHandler.HandleDeleteTemplate))
+
+	// Protected Schedules
+	mux.HandleFunc("GET /api/schedules", RequireAuth(s, automationHandler.HandleListSchedules))
+	mux.HandleFunc("POST /api/schedules", RequireAuth(s, automationHandler.HandleCreateSchedule))
+	mux.HandleFunc("GET /api/schedules/{id}", RequireAuth(s, automationHandler.HandleGetSchedule))
+	mux.HandleFunc("PUT /api/schedules/{id}", RequireAuth(s, automationHandler.HandleUpdateSchedule))
+	mux.HandleFunc("POST /api/schedules/{id}/trigger", RequireAuth(s, automationHandler.HandleTriggerSchedule))
+	mux.HandleFunc("DELETE /api/schedules/{id}", RequireAuth(s, automationHandler.HandleDeleteSchedule))
+
+	// Protected Harnesses
+	mux.HandleFunc("GET /api/harnesses", RequireAuth(s, automationHandler.HandleListHarnesses))
+	mux.HandleFunc("POST /api/harnesses/{name}/update", RequireAuth(s, automationHandler.HandleUpdateHarness))
+
+	// Protected Notification Settings (Telegram / Ntfy / Quiet Hours)
+	mux.HandleFunc("GET /api/notifications/settings", RequireAuth(s, automationHandler.HandleGetNotificationSettings))
+	mux.HandleFunc("PUT /api/notifications/settings", RequireAuth(s, automationHandler.HandleUpdateNotificationSettings))
+
+	// Protected Repo Subagents (.claude/agents/*.md)
+	mux.HandleFunc("GET /api/repos/{id}/claude-agents", RequireAuth(s, subagentsHandler.HandleList))
+	mux.HandleFunc("POST /api/repos/{id}/claude-agents", RequireAuth(s, subagentsHandler.HandleSave))
+	mux.HandleFunc("DELETE /api/repos/{id}/claude-agents/{name}", RequireAuth(s, subagentsHandler.HandleDelete))
+
 	// Real-time WebSockets
 	mux.HandleFunc("GET /api/events/ws", RequireAuth(s, wsHandler.HandleEventsWS))
 	mux.HandleFunc("GET /api/terminal/ws", RequireAuth(s, wsHandler.HandleTerminalWS))
@@ -220,6 +250,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if err := s.orch.Start(ctx); err != nil {
 		s.logger.Error("failed to start orchestrator", "error", err)
 	}
+	s.orch.StartSchedulerLoop(ctx, 1*time.Minute)
 
 	s.logger.Info("Starting HTTP server", "addr", s.cfg.BindAddr)
 	err := s.httpServer.ListenAndServe()
