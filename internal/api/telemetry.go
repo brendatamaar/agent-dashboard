@@ -1,22 +1,35 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"runtime"
 
+	"agent-dashboard/internal/core/agent"
 	"agent-dashboard/internal/core/system"
+	rt "agent-dashboard/internal/runtime"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/mem"
 )
 
-type TelemetryHandler struct {
-	dataDir string
+type AgentStatsProvider interface {
+	ListAgents() []agent.Agent
+	Stats(ctx context.Context, agentID string) (rt.Usage, error)
 }
 
-func NewTelemetryHandler(dataDir string) *TelemetryHandler {
-	return &TelemetryHandler{dataDir: dataDir}
+type TelemetryHandler struct {
+	dataDir string
+	stats   AgentStatsProvider
+}
+
+func NewTelemetryHandler(dataDir string, stats ...AgentStatsProvider) *TelemetryHandler {
+	var sp AgentStatsProvider
+	if len(stats) > 0 {
+		sp = stats[0]
+	}
+	return &TelemetryHandler{dataDir: dataDir, stats: sp}
 }
 
 func (t *TelemetryHandler) HandleGetSystem(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +69,25 @@ func (t *TelemetryHandler) HandleGetSystem(w http.ResponseWriter, r *http.Reques
 	}
 
 	usage.DiskWarning = system.CalculateDiskWarning(usage.DiskPercent)
+
+	usage.Agents = make([]system.AgentUsage, 0)
+	if t.stats != nil {
+		for _, a := range t.stats.ListAgents() {
+			au := system.AgentUsage{
+				AgentID:   a.ID,
+				RepoID:    a.RepoID,
+				State:     string(a.State),
+				MemoryCap: 700 * 1024 * 1024,
+			}
+			if agent.IsActive(a.State) {
+				if st, err := t.stats.Stats(r.Context(), a.ID); err == nil {
+					au.CPUPercent = st.CPUPercent
+					au.MemoryBytes = st.MemoryBytes
+				}
+			}
+			usage.Agents = append(usage.Agents, au)
+		}
+	}
 
 	writeJSON(w, http.StatusOK, usage)
 }

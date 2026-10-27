@@ -461,6 +461,14 @@ func (s *Store) DeleteRepo(ctx context.Context, id string) error {
 	return err
 }
 
+// UpdateRepoSettings updates settings_json for a repository.
+func (s *Store) UpdateRepoSettings(ctx context.Context, id string, settingsJSON string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE repos SET settings_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+	`, settingsJSON, id)
+	return err
+}
+
 // AgentRecord represents a persisted agent session.
 type AgentRecord struct {
 	ID               string    `json:"id"`
@@ -475,60 +483,76 @@ type AgentRecord struct {
 	ContainerID      string    `json:"container_id"`
 	HarnessSessionID string    `json:"harness_session_id"`
 	State            string    `json:"state"`
+	FailureReason    string    `json:"failure_reason"`
+	AutoApprove      bool      `json:"auto_approve"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // CreateAgent creates or updates an agent database record.
 func (s *Store) CreateAgent(ctx context.Context, a *AgentRecord) error {
+	autoApproveInt := 0
+	if a.AutoApprove {
+		autoApproveInt = 1
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO agents (id, repo_id, harness, model, runtime, mode, branch, worktree_path, tmux_session, container_id, harness_session_id, state, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		INSERT INTO agents (id, repo_id, harness, model, runtime, mode, branch, worktree_path, tmux_session, container_id, harness_session_id, state, failure_reason, auto_approve, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			harness_session_id = excluded.harness_session_id,
 			tmux_session = excluded.tmux_session,
 			container_id = excluded.container_id,
 			state = excluded.state,
+			failure_reason = excluded.failure_reason,
+			auto_approve = excluded.auto_approve,
 			updated_at = CURRENT_TIMESTAMP
-	`, a.ID, a.RepoID, a.Harness, a.Model, a.Runtime, a.Mode, a.Branch, a.WorktreePath, a.TmuxSession, a.ContainerID, a.HarnessSessionID, a.State)
+	`, a.ID, a.RepoID, a.Harness, a.Model, a.Runtime, a.Mode, a.Branch, a.WorktreePath, a.TmuxSession, a.ContainerID, a.HarnessSessionID, a.State, a.FailureReason, autoApproveInt)
 	return err
 }
 
 // UpdateAgent updates an agent's state and session references.
 func (s *Store) UpdateAgent(ctx context.Context, a *AgentRecord) error {
+	autoApproveInt := 0
+	if a.AutoApprove {
+		autoApproveInt = 1
+	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE agents SET
 			harness_session_id = ?,
 			tmux_session = ?,
 			container_id = ?,
 			state = ?,
+			failure_reason = ?,
+			auto_approve = ?,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, a.HarnessSessionID, a.TmuxSession, a.ContainerID, a.State, a.ID)
+	`, a.HarnessSessionID, a.TmuxSession, a.ContainerID, a.State, a.FailureReason, autoApproveInt, a.ID)
 	return err
 }
 
 // GetAgent retrieves an agent by ID.
 func (s *Store) GetAgent(ctx context.Context, id string) (*AgentRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, repo_id, harness, model, runtime, mode, branch, worktree_path, tmux_session, container_id, harness_session_id, state, created_at, updated_at
+		SELECT id, repo_id, harness, model, runtime, mode, branch, worktree_path, tmux_session, container_id, harness_session_id, state, failure_reason, auto_approve, created_at, updated_at
 		FROM agents WHERE id = ?
 	`, id)
 	var a AgentRecord
-	err := row.Scan(&a.ID, &a.RepoID, &a.Harness, &a.Model, &a.Runtime, &a.Mode, &a.Branch, &a.WorktreePath, &a.TmuxSession, &a.ContainerID, &a.HarnessSessionID, &a.State, &a.CreatedAt, &a.UpdatedAt)
+	var autoApproveInt int
+	err := row.Scan(&a.ID, &a.RepoID, &a.Harness, &a.Model, &a.Runtime, &a.Mode, &a.Branch, &a.WorktreePath, &a.TmuxSession, &a.ContainerID, &a.HarnessSessionID, &a.State, &a.FailureReason, &autoApproveInt, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	a.AutoApprove = autoApproveInt != 0
 	return &a, nil
 }
 
 // ListAgents returns all agents, ordered by updated_at descending.
 func (s *Store) ListAgents(ctx context.Context) ([]AgentRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, repo_id, harness, model, runtime, mode, branch, worktree_path, tmux_session, container_id, harness_session_id, state, created_at, updated_at
+		SELECT id, repo_id, harness, model, runtime, mode, branch, worktree_path, tmux_session, container_id, harness_session_id, state, failure_reason, auto_approve, created_at, updated_at
 		FROM agents ORDER BY updated_at DESC
 	`)
 	if err != nil {
@@ -539,9 +563,11 @@ func (s *Store) ListAgents(ctx context.Context) ([]AgentRecord, error) {
 	var agents []AgentRecord
 	for rows.Next() {
 		var a AgentRecord
-		if err := rows.Scan(&a.ID, &a.RepoID, &a.Harness, &a.Model, &a.Runtime, &a.Mode, &a.Branch, &a.WorktreePath, &a.TmuxSession, &a.ContainerID, &a.HarnessSessionID, &a.State, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var autoApproveInt int
+		if err := rows.Scan(&a.ID, &a.RepoID, &a.Harness, &a.Model, &a.Runtime, &a.Mode, &a.Branch, &a.WorktreePath, &a.TmuxSession, &a.ContainerID, &a.HarnessSessionID, &a.State, &a.FailureReason, &autoApproveInt, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
+		a.AutoApprove = autoApproveInt != 0
 		agents = append(agents, a)
 	}
 	return agents, rows.Err()

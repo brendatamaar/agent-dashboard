@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   Bell,
   BellOff,
   Bot,
@@ -16,6 +17,7 @@ import {
   RefreshCw,
   Send,
   Server,
+  Settings as SettingsIcon,
   Shield,
   Square,
   Terminal as TerminalIcon,
@@ -29,11 +31,13 @@ import {
   CreateAgentInput,
   NormalizedEvent,
   Repo,
+  RepoSettings,
   SecretMetadata,
   SystemStats,
   User,
   addRepo,
   apiFetch,
+  cancelAgent,
   checkSetupStatus,
   createAgent,
   createSecret,
@@ -48,6 +52,7 @@ import {
   getApprovals,
   getAuditLogs,
   getMe,
+  getRepoSettings,
   getRepos,
   getSecrets,
   getSystemStats,
@@ -59,6 +64,7 @@ import {
   stopAgent,
   subscribePush,
   unsubscribePush,
+  updateRepoSettings,
 } from './api';
 import { Terminal } from './components/Terminal';
 import { ApprovalCard } from './components/ApprovalCard';
@@ -103,6 +109,11 @@ export default function App() {
   // Add Repo form states
   const [newRepoUrl, setNewRepoUrl] = useState('');
   const [newRepoName, setNewRepoName] = useState('');
+
+  // Repo Settings modal states
+  const [settingsRepo, setSettingsRepo] = useState<Repo | null>(null);
+  const [repoSettings, setRepoSettings] = useState<RepoSettings>({ runtime: 'docker', auto_approve: false });
+  const [savingSettings, setSavingSettings] = useState(false);
 
   // Add Secret form states
   const [newSecKind, setNewSecKind] = useState('harness_auth');
@@ -476,6 +487,40 @@ export default function App() {
     }
   };
 
+  const handleCancelAgent = async (id: string) => {
+    try {
+      await cancelAgent(id);
+      setAgents((prev) => prev.filter((a) => a.id !== id));
+      if (selectedAgentId === id) setSelectedAgentId(null);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleOpenSettings = async (repo: Repo) => {
+    setSettingsRepo(repo);
+    try {
+      const set = await getRepoSettings(repo.id);
+      setRepoSettings(set);
+    } catch {
+      setRepoSettings({ runtime: 'docker', auto_approve: false });
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    if (!settingsRepo) return;
+    setSavingSettings(true);
+    try {
+      const updated = await updateRepoSettings(settingsRepo.id, repoSettings);
+      setRepoSettings(updated);
+      setSettingsRepo(null);
+    } catch (err: any) {
+      alert(`Failed to save settings: ${err.message}`);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this agent and its worktree?')) return;
     try {
@@ -495,7 +540,7 @@ export default function App() {
     return `${mb.toFixed(0)} MB`;
   };
 
-  const renderStateBadge = (state: string) => {
+  const renderStateBadge = (state: string, failureReason?: string) => {
     switch (state) {
       case 'running':
       case 'provisioning':
@@ -505,9 +550,14 @@ export default function App() {
       case 'idle':
         return <span className="badge badge-info">Interactive Idle</span>;
       case 'queued':
-        return <span className="badge badge-warning">Queued</span>;
+        return <span className="badge" style={{ backgroundColor: 'rgba(234, 179, 8, 0.2)', color: '#facc15', border: '1px solid rgba(234, 179, 8, 0.4)' }}>Queued</span>;
       case 'done':
         return <span className="badge badge-muted">Completed</span>;
+      case 'failed':
+        if (failureReason === 'oom_killed') {
+          return <span className="badge badge-danger">OOM Killed</span>;
+        }
+        return <span className="badge badge-danger">Failed</span>;
       default:
         return <span className="badge badge-danger">{state}</span>;
     }
@@ -742,6 +792,11 @@ export default function App() {
               >
                 <TerminalIcon style={{ width: 16, height: 16 }} /> {showAgentTerminal ? 'Live View' : 'Terminal'}
               </button>
+              {selectedAgent.state === 'queued' && (
+                <button className="btn btn-secondary" onClick={() => handleCancelAgent(selectedAgent.id)}>
+                  <Square style={{ width: 16, height: 16, color: 'var(--danger)' }} /> Cancel Queue
+                </button>
+              )}
               {selectedAgent.state === 'running' || selectedAgent.state === 'idle' || selectedAgent.state === 'awaiting_approval' ? (
                 <button className="btn btn-secondary" onClick={() => handleStop(selectedAgent.id)}>
                   <Square style={{ width: 16, height: 16, color: 'var(--danger)' }} /> Stop
@@ -763,10 +818,22 @@ export default function App() {
                   <span>Branch: <code>{selectedAgent.branch}</code></span>
                   <span>Mode: {selectedAgent.mode}</span>
                   <span>Harness: {selectedAgent.harness}</span>
+                  <span>Runtime: {selectedAgent.runtime || 'docker'}</span>
                 </div>
               </div>
-              <div>{renderStateBadge(selectedAgent.state)}</div>
+              <div>{renderStateBadge(selectedAgent.state, selectedAgent.failure_reason)}</div>
             </div>
+
+            {selectedAgent.failure_reason === 'oom_killed' && (
+              <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: 8, color: '#f87171', marginBottom: '0.75rem', fontSize: '0.8125rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontWeight: 600, marginBottom: '0.25rem' }}>
+                  <AlertTriangle style={{ width: 16, height: 16 }} /> Agent Process OOM Killed
+                </div>
+                <p style={{ margin: 0, fontSize: '0.75rem' }}>
+                  The sandbox container exceeded its 700 MB RAM limit. Try running in task mode with smaller prompts or fewer concurrent files.
+                </p>
+              </div>
+            )}
 
             {selectedAgent.prompt && (
               <div style={{ padding: '0.625rem', backgroundColor: '#0f172a', borderRadius: '0.375rem', fontSize: '0.875rem', marginBottom: '0.75rem' }}>
@@ -918,16 +985,33 @@ export default function App() {
                         <code>{ag.branch}</code>
                       </div>
                     </div>
-                    <div>{renderStateBadge(ag.state)}</div>
+                    <div>{renderStateBadge(ag.state, ag.failure_reason)}</div>
                   </div>
                   {ag.prompt && (
                     <p style={{ fontSize: '0.8125rem', color: 'var(--text-main)', marginTop: '0.375rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {ag.prompt}
                     </p>
                   )}
+                  {ag.failure_reason === 'oom_killed' && (
+                    <div style={{ marginTop: '0.375rem', padding: '0.25rem 0.5rem', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: 4, fontSize: '0.75rem', color: '#f87171' }}>
+                      Container OOM Killed (&gt; 700 MB limit exceeded)
+                    </div>
+                  )}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem', fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
                     <span>Harness: {ag.harness} ({ag.mode})</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      {ag.state === 'queued' && (
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          style={{ fontSize: '0.6875rem', padding: '0.2rem 0.4rem', color: 'var(--danger)' }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCancelAgent(ag.id);
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      )}
                       <button
                         className="btn btn-secondary btn-sm"
                         style={{ fontSize: '0.6875rem', padding: '0.2rem 0.4rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
@@ -1025,6 +1109,14 @@ export default function App() {
                   </button>
                   <button
                     className="btn btn-secondary"
+                    style={{ fontSize: '0.75rem', padding: '0.375rem 0.625rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                    onClick={() => handleOpenSettings(r)}
+                    title="Configure repository runtime and isolation settings"
+                  >
+                    <SettingsIcon style={{ width: 13, height: 13 }} /> Settings
+                  </button>
+                  <button
+                    className="btn btn-secondary"
                     style={{ fontSize: '0.75rem', padding: '0.375rem 0.625rem' }}
                     onClick={() => deleteRepo(r.id).then(() => setRepos((prev) => prev.filter((p) => p.id !== r.id)))}
                   >
@@ -1051,6 +1143,16 @@ export default function App() {
       {!selectedAgent && activeTab === 'system' && stats && (
         <div>
           <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.75rem' }}>System Performance</h2>
+
+          {stats.disk_warning && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: 8, color: '#f87171', marginBottom: '1rem', fontSize: '0.8125rem' }}>
+              <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+              <div>
+                <strong>Disk Storage Warning:</strong> Disk usage exceeds 80% ({stats.disk_percent.toFixed(1)}%). Consider pruning completed agents or cleaning worktrees.
+              </div>
+            </div>
+          )}
+
           <div className="grid-2">
             <div className="card">
               <div className="card-header">
@@ -1091,16 +1193,43 @@ export default function App() {
             <div className="card">
               <div className="card-header">
                 <span className="card-title"><Server /> Swap Memory</span>
-                <span className="badge badge-muted">{stats.swap_percent.toFixed(1)}%</span>
+                <span className={`badge ${stats.swap_percent > 50 ? 'badge-warning' : 'badge-muted'}`}>{stats.swap_percent.toFixed(1)}%</span>
               </div>
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                 {formatBytes(stats.swap_used_bytes)} / {formatBytes(stats.swap_total_bytes)}
               </p>
               <div className="progress-track">
-                <div className="progress-bar" style={{ width: `${stats.swap_percent}%` }} />
+                <div className={`progress-bar ${stats.swap_percent > 50 ? 'warning' : ''}`} style={{ width: `${stats.swap_percent}%` }} />
               </div>
             </div>
           </div>
+
+          {stats.agents && stats.agents.length > 0 && (
+            <div style={{ marginTop: '1.25rem' }}>
+              <h3 style={{ fontSize: '0.875rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+                Active Agent Containers ({stats.agents.length} / 2 max)
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {stats.agents.map((ag) => (
+                  <div key={ag.id} className="card" style={{ padding: '0.75rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                      <span style={{ fontWeight: 600, fontSize: '0.8125rem' }}>{ag.id}</span>
+                      <span className="badge badge-muted">RAM: {ag.memory_percent.toFixed(1)}% | CPU: {ag.cpu_percent.toFixed(1)}%</span>
+                    </div>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0 0 0.375rem 0' }}>
+                      {formatBytes(ag.memory_bytes)} / 700 MB Container Limit
+                    </p>
+                    <div className="progress-track">
+                      <div
+                        className={`progress-bar ${ag.memory_percent > 85 ? 'warning' : ''}`}
+                        style={{ width: `${Math.min(100, ag.memory_percent)}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1303,6 +1432,96 @@ export default function App() {
               </div>
               <button className="btn btn-primary btn-full" type="submit">
                 Clone to Workspace
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* REPO SETTINGS MODAL */}
+      {settingsRepo && (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+          <div className="card" style={{ width: '100%', maxWidth: 440 }}>
+            <div className="card-header">
+              <h2 className="card-title">
+                <SettingsIcon style={{ color: 'var(--primary)', width: 18, height: 18 }} /> Settings: {settingsRepo.name}
+              </h2>
+              <button className="btn btn-secondary" onClick={() => setSettingsRepo(null)}>
+                <X style={{ width: 16, height: 16 }} />
+              </button>
+            </div>
+
+            <form onSubmit={(e) => { e.preventDefault(); handleSaveSettings(); }}>
+              <div className="input-group">
+                <label className="input-label">Isolation Runtime</label>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button
+                    type="button"
+                    className={`btn btn-full ${repoSettings.runtime === 'docker' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setRepoSettings((prev) => ({ ...prev, runtime: 'docker' }))}
+                  >
+                    Docker (Default)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-full ${repoSettings.runtime === 'host' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setRepoSettings((prev) => ({ ...prev, runtime: 'host', auto_approve: false }))}
+                  >
+                    Host (Opt-in)
+                  </button>
+                </div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                  Docker isolates each agent in a container capped at 700 MB RAM and 1 CPU.
+                </p>
+              </div>
+
+              <div className="input-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: repoSettings.runtime === 'host' ? 'not-allowed' : 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={repoSettings.auto_approve}
+                    disabled={repoSettings.runtime === 'host'}
+                    onChange={(e) => setRepoSettings((prev) => ({ ...prev, auto_approve: e.target.checked }))}
+                  />
+                  <span style={{ fontSize: '0.8125rem', fontWeight: 500, color: repoSettings.runtime === 'host' ? 'var(--text-muted)' : 'inherit' }}>
+                    Auto-approve tool permissions (--dangerously-skip-permissions)
+                  </span>
+                </label>
+                {repoSettings.runtime === 'host' ? (
+                  <p style={{ fontSize: '0.75rem', color: '#f87171', marginTop: '0.25rem' }}>
+                    Auto-approve is prohibited in the Host runtime for security (Docker only).
+                  </p>
+                ) : (
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                    Container runs unattended without prompting for every command.
+                  </p>
+                )}
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Custom Docker Image</label>
+                <input
+                  className="input-control"
+                  type="text"
+                  value={repoSettings.image || ''}
+                  onChange={(e) => setRepoSettings((prev) => ({ ...prev, image: e.target.value }))}
+                  placeholder="agentd/sandbox:latest"
+                />
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Setup Command</label>
+                <input
+                  className="input-control"
+                  type="text"
+                  value={repoSettings.setup_command || ''}
+                  onChange={(e) => setRepoSettings((prev) => ({ ...prev, setup_command: e.target.value }))}
+                  placeholder="e.g. npm install"
+                />
+              </div>
+
+              <button className="btn btn-primary btn-full" type="submit" disabled={savingSettings}>
+                {savingSettings ? 'Saving...' : 'Save Settings'}
               </button>
             </form>
           </div>

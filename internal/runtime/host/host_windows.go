@@ -70,3 +70,12 @@ func (h *HostRuntime) ListSessions(ctx context.Context) ([]string, error) {
 	}
 	return list, nil
 }
+
+func (h *HostRuntime) Inspect(ctx context.Context, handle runtime.Handle) (runtime.ContainerInfo, error) {
+	winMu.RLock()
+	defer winMu.RUnlock()
+	if _, ok := winSessions[string(handle)]; !ok {
+		return runtime.ContainerInfo{Status: "stopped", ExitCode: 0, OOMKilled: false}, nil
+	}
+	return runtime.ContainerInfo{Status: "running", ExitCode: 0, OOMKilled: false}, nil
+}

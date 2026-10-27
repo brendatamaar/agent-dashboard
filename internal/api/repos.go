@@ -199,3 +199,51 @@ func (h *ReposHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	_ = h.store.WriteAudit(r.Context(), user.Username, "repo_delete", rp.Name, "success")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
+
+func (h *ReposHandler) HandleGetSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rp, err := h.store.GetRepo(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "repo not found"})
+		return
+	}
+
+	set := repo.DefaultRepoSettings()
+	if rp.SettingsJSON != "" {
+		_ = json.Unmarshal([]byte(rp.SettingsJSON), &set)
+	}
+	writeJSON(w, http.StatusOK, set)
+}
+
+func (h *ReposHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rp, err := h.store.GetRepo(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "repo not found"})
+		return
+	}
+
+	var req repo.RepoSettings
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if err := repo.ValidateRepoSettings(req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to serialize settings"})
+		return
+	}
+
+	if err := h.store.UpdateRepoSettings(r.Context(), rp.ID, string(data)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, req)
+}

@@ -66,13 +66,13 @@ Goal: review and ship from the phone.
 
 Goal: safe parallelism on 2 GB, with Docker as the default runtime.
 
-- [ ] `docker` runtime driver: image with tmux, git, Node and the harness CLIs; one container per agent; only the worktree mounted; non-root user; no Docker socket; no host ports; dropped capabilities; CPU and memory limits (about 700 MB each).
-- [ ] Secrets injected per container at start; verify they never reach the worktree or logs.
-- [ ] Per-repo settings: runtime, image, setup command, env vars, allowed tools. Repos that need `docker compose` use the `host` runtime.
-- [ ] Docker becomes the default runtime; auto-approve allowed only here, off by default.
-- [ ] Concurrency: global and per-repo caps, queue, queued state in the UI.
-- [ ] Resource panel: per-agent CPU/RAM, disk usage with an 80% warning, swap status; OOM detection with a clear failure state.
-- [ ] Contract test suite shared by `host` and `docker` runtimes.
+- [x] `docker` runtime driver: image with tmux, git, Node and the harness CLIs; one container per agent; only the worktree mounted; non-root user; no Docker socket; no host ports; dropped capabilities; CPU and memory limits (about 700 MB each).
+- [x] Secrets injected per container at start; verify they never reach the worktree or logs.
+- [x] Per-repo settings: runtime, image, setup command, env vars, allowed tools. Repos that need `docker compose` use the `host` runtime.
+- [x] Docker becomes the default runtime; auto-approve allowed only here, off by default.
+- [x] Concurrency: global and per-repo caps, queue, queued state in the UI.
+- [x] Resource panel: per-agent CPU/RAM, disk usage with an 80% warning, swap status; OOM detection with a clear failure state.
+- [x] Contract test suite shared by `host` and `docker` runtimes.
 
 **Gate 3:** two agents run in parallel on two repos within 2 GB, a third task queues, none of them can reach host services or each other's worktrees, and killing one container leaves the other and the dashboard unaffected.
 
