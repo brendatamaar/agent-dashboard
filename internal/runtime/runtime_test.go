@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"testing"
 
 	"agent-dashboard/internal/runtime"
@@ -96,11 +97,23 @@ func TestFakeRuntimeContract(t *testing.T) {
 }
 
 func TestHostRuntimeContract(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("skipping host runtime contract test: tmux not found")
+	}
 	h := host.NewHostRuntime()
 	runRuntimeContractTest(t, h)
 }
 
 func TestDockerRuntimeContract(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("skipping docker runtime contract test: docker binary not found")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("skipping docker runtime contract test: docker daemon not accessible")
+	}
+	if err := exec.Command("docker", "image", "inspect", "agentd/sandbox:latest").Run(); err != nil {
+		t.Skip("skipping docker runtime contract test: agentd/sandbox:latest image not found locally")
+	}
 	d := docker.NewDockerRuntime()
 	runRuntimeContractTest(t, d)
 }
