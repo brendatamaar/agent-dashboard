@@ -108,7 +108,7 @@ export default function App() {
   const [startRepoId, setStartRepoId] = useState('');
   const [startPrompt, setStartPrompt] = useState('');
   const [startMode, setStartMode] = useState<'task' | 'interactive'>('task');
-  const [startModel, setStartModel] = useState('claude-3-7-sonnet-20250219');
+  const [startModel, setStartModel] = useState('sonnet');
   const [startBaseBranch, setStartBaseBranch] = useState('');
   const [startCustomBranch, setStartCustomBranch] = useState('');
 
@@ -1380,7 +1380,7 @@ export default function App() {
                   onChange={(e) => {
                     const h = e.target.value;
                     setStartHarness(h);
-                    if (h === 'claude') setStartModel('claude-3-7-sonnet-20250219');
+                    if (h === 'claude') setStartModel('sonnet');
                     else if (h === 'antigravity') setStartModel('gemini-2.5-pro');
                     else if (h === 'gemini') setStartModel('gemini-2.5-pro');
                     else if (h === 'codex') setStartModel('o3-mini');
@@ -1416,44 +1416,57 @@ export default function App() {
               </div>
 
               <div className="input-group">
-                <label className="input-label">Model</label>
-                <select
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                  <label className="input-label" style={{ marginBottom: 0 }}>Model</label>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Choose or type custom model</span>
+                </div>
+                <input
+                  type="text"
                   className="input-control"
+                  list="model-options"
                   value={startModel}
                   onChange={(e) => setStartModel(e.target.value)}
-                >
+                  placeholder="e.g. sonnet, gemini-2.5-pro, o3-mini"
+                  required
+                />
+                <datalist id="model-options">
                   {startHarness === 'claude' && (
                     <>
-                      <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet (Default)</option>
+                      <option value="sonnet">sonnet (Always Latest Sonnet)</option>
+                      <option value="opus">opus (Always Latest Opus)</option>
+                      <option value="haiku">haiku (Always Latest Haiku)</option>
+                      <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet</option>
                       <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
                       <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku</option>
                     </>
                   )}
                   {startHarness === 'antigravity' && (
                     <>
-                      <option value="gemini-2.5-pro">Gemini 2.5 Pro (Default)</option>
+                      <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                       <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                       <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                      <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
                     </>
                   )}
                   {startHarness === 'gemini' && (
                     <>
-                      <option value="gemini-2.5-pro">Gemini 2.5 Pro (Default)</option>
+                      <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                       <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                     </>
                   )}
                   {startHarness === 'codex' && (
                     <>
-                      <option value="o3-mini">o3-mini (Default)</option>
+                      <option value="o3-mini">o3-mini</option>
                       <option value="gpt-4o">GPT-4o</option>
+                      <option value="o1">o1</option>
                     </>
                   )}
                   {startHarness === 'muse' && (
                     <>
-                      <option value="muse-1">muse-1 (Default)</option>
+                      <option value="muse-1">muse-1</option>
                     </>
                   )}
-                </select>
+                </datalist>
               </div>
 
               <div className="input-group">
