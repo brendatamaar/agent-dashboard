@@ -80,12 +80,12 @@ Goal: safe parallelism on 2 GB, with Docker as the default runtime.
 
 Goal: Codex, Gemini and Muse behind the same adapter, plus templates and schedules.
 
-- [ ] **Spike per harness:** read `--help` for the installed version; record headless command, resume command, auth method and approval behaviour in `docs/adr/`.
-- [ ] Adapters: Codex CLI (`exec`), Gemini CLI, Muse Code (`exec`, `resume`). Each passes the shared harness contract tests with recorded fixtures.
-- [ ] Harness manager: installed version, update button, auth status and expiry per harness.
-- [ ] Templates (saved prompt + settings) and scheduled tasks (cron-style) that queue agents.
-- [ ] Subagent view: show Claude Code subagent activity nested under its parent; manage `.claude/agents/*.md` per repo.
-- [ ] Optional channels: Telegram or ntfy notifications; quiet hours.
+- [x] **Spike per harness:** read `--help` for the installed version; record headless command, resume command, auth method and approval behaviour in `docs/adr/`.
+- [x] Adapters: Codex CLI (`exec`), Gemini CLI, Muse Code (`exec`, `resume`). Each passes the shared harness contract tests with recorded fixtures.
+- [x] Harness manager: installed version, update button, auth status and expiry per harness.
+- [x] Templates (saved prompt + settings) and scheduled tasks (cron-style) that queue agents.
+- [x] Subagent view: show Claude Code subagent activity nested under its parent; manage `.claude/agents/*.md` per repo.
+- [x] Optional channels: Telegram or ntfy notifications; quiet hours.
 
 **Gate 4:** the user runs one task each on Claude Code, Codex and Gemini (and Muse if they have a key) from the same UI, and a scheduled nightly task opens a PR.
 

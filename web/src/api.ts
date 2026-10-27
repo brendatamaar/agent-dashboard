@@ -92,7 +92,7 @@ export interface Agent {
 
 export interface NormalizedEvent {
   seq: number;
-  type: 'message' | 'tool_call' | 'tool_result' | 'approval_needed' | 'usage' | 'done' | 'error';
+  type: 'message' | 'tool_call' | 'tool_result' | 'approval_needed' | 'usage' | 'done' | 'error' | 'subagent_started' | 'subagent_finished';
   timestamp: string;
   payload: Record<string, any>;
 }
@@ -422,4 +422,126 @@ export async function createPR(
     method: 'POST',
     body: JSON.stringify({ title, body }),
   });
+}
+
+
+export interface Template {
+  id: string;
+  name: string;
+  harness: string;
+  prompt: string;
+  settings_json?: string;
+  created_at: string;
+}
+
+export interface Schedule {
+  id: string;
+  template_id: string;
+  repo_id: string;
+  cron: string;
+  enabled: boolean;
+  created_at: string;
+  last_run_at?: string;
+  next_run_at?: string;
+}
+
+export interface HarnessInfo {
+  name: string;
+  installed: boolean;
+  version: { version: string; raw: string };
+  auth_status: { logged_in: boolean; auth_method: string; email?: string };
+  error?: string;
+}
+
+export interface NotificationSettings {
+  telegram: { enabled: boolean; bot_token: string; chat_id: string };
+  ntfy: { enabled: boolean; server_url: string; topic: string };
+  quiet_hours: {
+    enabled: boolean;
+    start_hour: number;
+    start_min: number;
+    end_hour: number;
+    end_min: number;
+    timezone: string;
+  };
+}
+
+export interface SubagentDef {
+  name: string;
+  content: string;
+}
+
+// Templates API
+export async function listTemplates(): Promise<Template[]> {
+  return await apiFetch<Template[]>('/api/templates');
+}
+
+export async function createTemplate(data: { name: string; harness: string; prompt: string }): Promise<Template> {
+  return await apiFetch<Template>('/api/templates', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteTemplate(id: string): Promise<void> {
+  await apiFetch('/api/templates/' + id, { method: 'DELETE' });
+}
+
+// Schedules API
+export async function listSchedules(): Promise<Schedule[]> {
+  return await apiFetch<Schedule[]>('/api/schedules');
+}
+
+export async function createSchedule(data: { template_id: string; repo_id: string; cron: string; enabled?: boolean }): Promise<Schedule> {
+  return await apiFetch<Schedule>('/api/schedules', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function triggerSchedule(id: string): Promise<void> {
+  await apiFetch('/api/schedules/' + id + '/trigger', { method: 'POST' });
+}
+
+export async function deleteSchedule(id: string): Promise<void> {
+  await apiFetch('/api/schedules/' + id, { method: 'DELETE' });
+}
+
+// Harnesses API
+export async function listHarnesses(): Promise<HarnessInfo[]> {
+  return await apiFetch<HarnessInfo[]>('/api/harnesses');
+}
+
+export async function updateHarness(name: string): Promise<{ status: string; output: string }> {
+  return await apiFetch<{ status: string; output: string }>('/api/harnesses/' + name + '/update', {
+    method: 'POST',
+  });
+}
+
+// Notification Settings API
+export async function getNotificationSettings(): Promise<NotificationSettings> {
+  return await apiFetch<NotificationSettings>('/api/notifications/settings');
+}
+
+export async function updateNotificationSettings(settings: NotificationSettings): Promise<NotificationSettings> {
+  return await apiFetch<NotificationSettings>('/api/notifications/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
+// Subagents API
+export async function listRepoSubagents(repoId: string): Promise<SubagentDef[]> {
+  return await apiFetch<SubagentDef[]>('/api/repos/' + repoId + '/claude-agents');
+}
+
+export async function saveRepoSubagent(repoId: string, def: SubagentDef): Promise<SubagentDef> {
+  return await apiFetch<SubagentDef>('/api/repos/' + repoId + '/claude-agents', {
+    method: 'POST',
+    body: JSON.stringify(def),
+  });
+}
+
+export async function deleteRepoSubagent(repoId: string, name: string): Promise<void> {
+  await apiFetch('/api/repos/' + repoId + '/claude-agents/' + name, { method: 'DELETE' });
 }

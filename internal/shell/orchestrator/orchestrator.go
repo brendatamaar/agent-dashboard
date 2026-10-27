@@ -14,7 +14,11 @@ import (
 	"agent-dashboard/internal/core/events"
 	"agent-dashboard/internal/core/repo"
 	"agent-dashboard/internal/harness"
+	"agent-dashboard/internal/core/scheduler"
 	"agent-dashboard/internal/harness/claude"
+	"agent-dashboard/internal/harness/codex"
+	"agent-dashboard/internal/harness/gemini"
+	"agent-dashboard/internal/harness/muse"
 	"agent-dashboard/internal/runtime"
 	"agent-dashboard/internal/shell/git"
 	"agent-dashboard/internal/shell/notifier"
@@ -74,6 +78,9 @@ type Orchestrator struct {
 	rt                 runtime.Runtime
 	runtimes           map[string]runtime.Runtime
 	harnesses          map[string]harness.Harness
+	harnessRegistry    *harness.Registry
+	schedulerState     scheduler.State
+	scheduledRuns      map[string]string
 	broadcaster        *EventBroadcaster
 	decryptor          SecretDecryptor
 	seqCounters        map[string]*int64
@@ -94,6 +101,22 @@ func NewOrchestrator(
 		logger = slog.Default()
 	}
 	claudeAdapter := claude.NewAdapter()
+	codexAdapter := codex.NewAdapter()
+	geminiAdapter := gemini.NewAdapter()
+	museAdapter := muse.NewAdapter()
+
+	harnessReg := harness.NewRegistry()
+	harnessReg.Register(claudeAdapter)
+	harnessReg.Register(codexAdapter)
+	harnessReg.Register(geminiAdapter)
+	harnessReg.Register(museAdapter)
+
+	harnesses := map[string]harness.Harness{
+		"claude": claudeAdapter,
+		"codex":  codexAdapter,
+		"gemini": geminiAdapter,
+		"muse":   museAdapter,
+	}
 	runtimes := make(map[string]runtime.Runtime)
 	if rt != nil {
 		runtimes[rt.Name()] = rt
@@ -104,7 +127,10 @@ func NewOrchestrator(
 		gitSvc:             gitSvc,
 		rt:                 rt,
 		runtimes:           runtimes,
-		harnesses:          map[string]harness.Harness{"claude": claudeAdapter},
+		harnesses:          harnesses,
+		harnessRegistry:    harnessReg,
+		schedulerState:     scheduler.NewState(),
+		scheduledRuns:      make(map[string]string),
 		broadcaster:        NewEventBroadcaster(),
 		decryptor:          decryptor,
 		seqCounters:        make(map[string]*int64),

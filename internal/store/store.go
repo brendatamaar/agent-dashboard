@@ -759,3 +759,165 @@ func (s *Store) DeletePushSubscription(ctx context.Context, endpoint string) err
 	_, err := s.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE endpoint = ?", endpoint)
 	return err
 }
+
+
+// Template represents a saved prompt and settings preset.
+type Template struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Harness      string    `json:"harness"`
+	Prompt       string    `json:"prompt"`
+	SettingsJSON string    `json:"settings_json"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// Schedule represents a cron-based automation trigger.
+type Schedule struct {
+	ID         string     `json:"id"`
+	TemplateID string     `json:"template_id"`
+	RepoID     string     `json:"repo_id"`
+	Cron       string     `json:"cron"`
+	Enabled    bool       `json:"enabled"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastRunAt  *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
+}
+
+func (s *Store) CreateTemplate(ctx context.Context, t Template) error {
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now().UTC()
+	}
+	if t.SettingsJSON == "" {
+		t.SettingsJSON = "{}"
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO templates (id, name, harness, prompt, settings_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, t.ID, t.Name, t.Harness, t.Prompt, t.SettingsJSON, t.CreatedAt)
+	return err
+}
+
+func (s *Store) GetTemplate(ctx context.Context, id string) (Template, error) {
+	var t Template
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, name, harness, prompt, settings_json, created_at
+		FROM templates WHERE id = ?
+	`, id)
+	err := row.Scan(&t.ID, &t.Name, &t.Harness, &t.Prompt, &t.SettingsJSON, &t.CreatedAt)
+	return t, err
+}
+
+func (s *Store) ListTemplates(ctx context.Context) ([]Template, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, harness, prompt, settings_json, created_at
+		FROM templates ORDER BY name ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var templates []Template
+	for rows.Next() {
+		var t Template
+		if err := rows.Scan(&t.ID, &t.Name, &t.Harness, &t.Prompt, &t.SettingsJSON, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		templates = append(templates, t)
+	}
+	return templates, rows.Err()
+}
+
+func (s *Store) UpdateTemplate(ctx context.Context, t Template) error {
+	if t.SettingsJSON == "" {
+		t.SettingsJSON = "{}"
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE templates
+		SET name = ?, harness = ?, prompt = ?, settings_json = ?
+		WHERE id = ?
+	`, t.Name, t.Harness, t.Prompt, t.SettingsJSON, t.ID)
+	return err
+}
+
+func (s *Store) DeleteTemplate(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM templates WHERE id = ?", id)
+	return err
+}
+
+func (s *Store) CreateSchedule(ctx context.Context, sc Schedule) error {
+	if sc.CreatedAt.IsZero() {
+		sc.CreatedAt = time.Now().UTC()
+	}
+	enabledInt := 0
+	if sc.Enabled {
+		enabledInt = 1
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO schedules (id, template_id, repo_id, cron, enabled, created_at, last_run_at, next_run_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, sc.ID, sc.TemplateID, sc.RepoID, sc.Cron, enabledInt, sc.CreatedAt, sc.LastRunAt, sc.NextRunAt)
+	return err
+}
+
+func (s *Store) GetSchedule(ctx context.Context, id string) (Schedule, error) {
+	var sc Schedule
+	var enabledInt int
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, template_id, repo_id, cron, enabled, created_at, last_run_at, next_run_at
+		FROM schedules WHERE id = ?
+	`, id)
+	err := row.Scan(&sc.ID, &sc.TemplateID, &sc.RepoID, &sc.Cron, &enabledInt, &sc.CreatedAt, &sc.LastRunAt, &sc.NextRunAt)
+	sc.Enabled = enabledInt == 1
+	return sc, err
+}
+
+func (s *Store) ListSchedules(ctx context.Context) ([]Schedule, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, template_id, repo_id, cron, enabled, created_at, last_run_at, next_run_at
+		FROM schedules ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var schedules []Schedule
+	for rows.Next() {
+		var sc Schedule
+		var enabledInt int
+		if err := rows.Scan(&sc.ID, &sc.TemplateID, &sc.RepoID, &sc.Cron, &enabledInt, &sc.CreatedAt, &sc.LastRunAt, &sc.NextRunAt); err != nil {
+			return nil, err
+		}
+		sc.Enabled = enabledInt == 1
+		schedules = append(schedules, sc)
+	}
+	return schedules, rows.Err()
+}
+
+func (s *Store) UpdateSchedule(ctx context.Context, sc Schedule) error {
+	enabledInt := 0
+	if sc.Enabled {
+		enabledInt = 1
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE schedules
+		SET template_id = ?, repo_id = ?, cron = ?, enabled = ?, last_run_at = ?, next_run_at = ?
+		WHERE id = ?
+	`, sc.TemplateID, sc.RepoID, sc.Cron, enabledInt, sc.LastRunAt, sc.NextRunAt, sc.ID)
+	return err
+}
+
+func (s *Store) UpdateScheduleNextRun(ctx context.Context, id string, lastRun, nextRun *time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE schedules
+		SET last_run_at = ?, next_run_at = ?
+		WHERE id = ?
+	`, lastRun, nextRun, id)
+	return err
+}
+
+func (s *Store) DeleteSchedule(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM schedules WHERE id = ?", id)
+	return err
+}

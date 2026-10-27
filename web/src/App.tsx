@@ -32,6 +32,7 @@ import {
   NormalizedEvent,
   Repo,
   RepoSettings,
+  Template,
   SecretMetadata,
   SystemStats,
   User,
@@ -68,6 +69,10 @@ import {
 } from './api';
 import { Terminal } from './components/Terminal';
 import { ApprovalCard } from './components/ApprovalCard';
+import { HarnessManager } from './components/HarnessManager';
+import { AutomationPanel } from './components/AutomationPanel';
+import { NotificationSettings } from './components/NotificationSettings';
+import { RepoSubagents } from './components/RepoSubagents';
 import { CommitSheet } from './components/CommitSheet';
 
 export default function App() {
@@ -81,7 +86,8 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
 
   // Navigation: 'agents' is the default phone-first screen
-  const [activeTab, setActiveTab] = useState<'agents' | 'repos' | 'terminal' | 'system' | 'secrets' | 'audit'>('agents');
+  const [activeTab, setActiveTab] = useState<'agents' | 'repos' | 'automation' | 'terminal' | 'system' | 'secrets' | 'audit'>('agents');
+  const [startHarness, setStartHarness] = useState('claude');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [showStartModal, setShowStartModal] = useState(false);
   const [showAddRepoModal, setShowAddRepoModal] = useState(false);
@@ -372,13 +378,19 @@ export default function App() {
     }
   };
 
+  const handleLaunchFromTemplate = (tmpl: Template) => {
+    setStartHarness(tmpl.harness || 'claude');
+    setStartPrompt(tmpl.prompt);
+    setShowStartModal(true);
+  };
+
   const handleStartAgentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
       const input: CreateAgentInput = {
         repo_id: startRepoId,
-        harness: 'claude',
+        harness: startHarness,
         model: startModel,
         mode: startMode,
         prompt: startPrompt,
@@ -1123,10 +1135,21 @@ export default function App() {
                     <Trash2 style={{ width: 14, height: 14 }} />
                   </button>
                 </div>
+                <RepoSubagents repoId={r.id} onNotify={setToastMessage} />
               </div>
             ))
           )}
         </div>
+      )}
+
+      
+      {/* AUTOMATION TAB */}
+      {!selectedAgent && activeTab === 'automation' && (
+        <AutomationPanel
+          repos={repos}
+          onLaunchTemplate={handleLaunchFromTemplate}
+          onNotify={setToastMessage}
+        />
       )}
 
       {/* WEB TERMINAL TAB (HOST SHELL) */}
@@ -1230,6 +1253,9 @@ export default function App() {
               </div>
             </div>
           )}
+
+          <HarnessManager onNotify={setToastMessage} />
+          <NotificationSettings onNotify={setToastMessage} />
         </div>
       )}
 
