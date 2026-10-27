@@ -10,10 +10,15 @@ import (
 type Handle string
 
 type RuntimeSpec struct {
-	SessionName string
-	WorkDir     string
-	Command     []string
-	Env         map[string]string
+	SessionName   string
+	WorkDir       string
+	Command       []string
+	Env           map[string]string
+	Image         string
+	MemoryBytes   int64
+	CPUs          float64
+	AutoApprove   bool
+	WorktreeMount string
 }
 
 type PTY interface {
@@ -26,6 +31,12 @@ type Usage struct {
 	MemoryBytes uint64  `json:"memory_bytes"`
 }
 
+type ContainerInfo struct {
+	Status    string `json:"status"` // "running", "stopped", "exited"
+	ExitCode  int    `json:"exit_code"`
+	OOMKilled bool   `json:"oom_killed"`
+}
+
 type Runtime interface {
 	Name() string
 	Create(ctx context.Context, spec RuntimeSpec) (Handle, error)
@@ -34,6 +45,7 @@ type Runtime interface {
 	Stats(ctx context.Context, h Handle) (Usage, error)
 	Destroy(ctx context.Context, h Handle) error
 	ListSessions(ctx context.Context) ([]string, error)
+	Inspect(ctx context.Context, h Handle) (ContainerInfo, error)
 }
 
 // FakePTY implements PTY in-memory for testing.
@@ -140,4 +152,13 @@ func (f *FakeRuntime) ListSessions(ctx context.Context) ([]string, error) {
 		list = append(list, name)
 	}
 	return list, nil
+}
+
+func (f *FakeRuntime) Inspect(ctx context.Context, h Handle) (ContainerInfo, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if _, exists := f.sessions[string(h)]; !exists {
+		return ContainerInfo{Status: "stopped", ExitCode: 0, OOMKilled: false}, nil
+	}
+	return ContainerInfo{Status: "running", ExitCode: 0, OOMKilled: false}, nil
 }

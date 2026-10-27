@@ -81,6 +81,7 @@ type AgentSpec struct {
 	BaseBranch   string
 	WorktreePath string
 	TmuxSession  string
+	AutoApprove  bool
 }
 
 type Agent struct {
@@ -99,6 +100,8 @@ type Agent struct {
 	HarnessSessionID string
 	State            State
 	ExitCode         *int
+	FailureReason    string // e.g. "oom_killed", "exit_error", "worktree_failed"
+	AutoApprove      bool
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -116,21 +119,27 @@ type ApprovalRequest struct {
 
 type ManagerState struct {
 	RunningCap         int
+	RepoCap            int                         // max concurrent running agents per repository (default 1)
 	Agents             map[string]Agent
 	Queue              []string                    // FIFO queue of agent IDs in StateQueued
 	AlwaysAllowedTools map[string]map[string]bool // agentID -> toolName -> true
 	PendingApprovals   map[string]ApprovalRequest // approvalID -> request
 }
 
-func NewManagerState(runningCap int) ManagerState {
+func NewManagerState(runningCap int, repoCap ...int) ManagerState {
 	if runningCap <= 0 {
 		runningCap = 1
 	}
 	if runningCap > 2 {
 		runningCap = 2
 	}
+	rc := 1
+	if len(repoCap) > 0 && repoCap[0] > 0 {
+		rc = repoCap[0]
+	}
 	return ManagerState{
 		RunningCap:         runningCap,
+		RepoCap:            rc,
 		Agents:             make(map[string]Agent),
 		Queue:              make([]string, 0),
 		AlwaysAllowedTools: make(map[string]map[string]bool),
@@ -148,9 +157,20 @@ func (s ManagerState) ActiveCount() int {
 	return count
 }
 
+func (s ManagerState) ActiveCountForRepo(repoID string) int {
+	count := 0
+	for _, a := range s.Agents {
+		if a.RepoID == repoID && IsActive(a.State) {
+			count++
+		}
+	}
+	return count
+}
+
 func (s ManagerState) Clone() ManagerState {
 	cloned := ManagerState{
 		RunningCap:         s.RunningCap,
+		RepoCap:            s.RepoCap,
 		Agents:             make(map[string]Agent, len(s.Agents)),
 		Queue:              make([]string, len(s.Queue)),
 		AlwaysAllowedTools: make(map[string]map[string]bool, len(s.AlwaysAllowedTools)),

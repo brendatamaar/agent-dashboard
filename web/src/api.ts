@@ -7,6 +7,13 @@ export interface User {
   passkeys_count: number;
 }
 
+export interface AgentUsageStats {
+  id: string;
+  memory_bytes: number;
+  memory_percent: number;
+  cpu_percent: number;
+}
+
 export interface SystemStats {
   cpu_percent: number;
   memory_used_bytes: number;
@@ -19,6 +26,7 @@ export interface SystemStats {
   swap_total_bytes: number;
   swap_percent: number;
   disk_warning: boolean;
+  agents?: AgentUsageStats[];
 }
 
 export interface AuditEntry {
@@ -76,6 +84,8 @@ export interface Agent {
   tmux_session: string;
   harness_session_id?: string;
   state: AgentState;
+  failure_reason?: string;
+  auto_approve?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -196,6 +206,24 @@ export async function deleteRepo(id: string): Promise<void> {
   await apiFetch(`/api/repos/${id}`, { method: 'DELETE' });
 }
 
+export interface RepoSettings {
+  runtime: 'docker' | 'host';
+  auto_approve: boolean;
+  image?: string;
+  setup_command?: string;
+}
+
+export async function getRepoSettings(repoId: string): Promise<RepoSettings> {
+  return await apiFetch<RepoSettings>(`/api/repos/${repoId}/settings`);
+}
+
+export async function updateRepoSettings(repoId: string, settings: RepoSettings): Promise<RepoSettings> {
+  return await apiFetch<RepoSettings>(`/api/repos/${repoId}/settings`, {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
 // Agents API
 export async function getAgents(): Promise<Agent[]> {
   return await apiFetch<Agent[]>('/api/agents');
@@ -231,6 +259,10 @@ export async function sendAgentMessage(id: string, message: string): Promise<voi
 
 export async function stopAgent(id: string): Promise<void> {
   await apiFetch(`/api/agents/${id}/stop`, { method: 'POST' });
+}
+
+export async function cancelAgent(id: string): Promise<void> {
+  await apiFetch(`/api/agents/${id}/cancel`, { method: 'POST' });
 }
 
 export async function deleteAgent(id: string): Promise<void> {

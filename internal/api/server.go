@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-dashboard/internal/core/auth"
+	"agent-dashboard/internal/runtime/docker"
 	"agent-dashboard/internal/runtime/host"
 	"agent-dashboard/internal/shell/git"
 	"agent-dashboard/internal/shell/notifier"
@@ -37,7 +38,6 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 		return nil, err
 	}
 
-	telemetryHandler := NewTelemetryHandler(cfg.DataDir)
 	secretsHandler := NewSecretsHandler(s, cfg.MasterPassphrase)
 	auditHandler := NewAuditHandler(s)
 
@@ -45,7 +45,12 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	workspaceDir := filepath.Join(cfg.DataDir, "workspace")
 	gitSvc := git.NewService(workspaceDir)
 	hostRt := host.NewHostRuntime()
-	orch := orchestrator.NewOrchestrator(s, gitSvc, hostRt, secretsHandler, logger, 1)
+	dockerRt := docker.NewDockerRuntime()
+	orch := orchestrator.NewOrchestrator(s, gitSvc, dockerRt, secretsHandler, logger, 1)
+	orch.RegisterRuntime("docker", dockerRt)
+	orch.RegisterRuntime("host", hostRt)
+
+	telemetryHandler := NewTelemetryHandler(cfg.DataDir, orch)
 
 	// Push Notifier wiring
 	pushNotifier, err := notifier.NewNotifier(s, logger)
@@ -98,6 +103,8 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	mux.HandleFunc("GET /api/repos", RequireAuth(s, reposHandler.HandleList))
 	mux.HandleFunc("POST /api/repos", RequireAuth(s, reposHandler.HandleAdd))
 	mux.HandleFunc("GET /api/repos/{id}", RequireAuth(s, reposHandler.HandleGet))
+	mux.HandleFunc("GET /api/repos/{id}/settings", RequireAuth(s, reposHandler.HandleGetSettings))
+	mux.HandleFunc("PUT /api/repos/{id}/settings", RequireAuth(s, reposHandler.HandleUpdateSettings))
 	mux.HandleFunc("POST /api/repos/{id}/fetch", RequireAuth(s, reposHandler.HandleFetch))
 	mux.HandleFunc("POST /api/repos/{id}/pull", RequireAuth(s, reposHandler.HandlePull))
 	mux.HandleFunc("DELETE /api/repos/{id}", RequireAuth(s, reposHandler.HandleDelete))
@@ -108,6 +115,7 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	mux.HandleFunc("GET /api/agents/{id}", RequireAuth(s, agentsHandler.HandleGet))
 	mux.HandleFunc("POST /api/agents/{id}/message", RequireAuth(s, agentsHandler.HandleSendMessage))
 	mux.HandleFunc("POST /api/agents/{id}/stop", RequireAuth(s, agentsHandler.HandleStop))
+	mux.HandleFunc("POST /api/agents/{id}/cancel", RequireAuth(s, agentsHandler.HandleCancel))
 	mux.HandleFunc("DELETE /api/agents/{id}", RequireAuth(s, agentsHandler.HandleDelete))
 	mux.HandleFunc("GET /api/agents/{id}/events", RequireAuth(s, agentsHandler.HandleGetEvents))
 

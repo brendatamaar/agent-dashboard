@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"agent-dashboard/internal/runtime"
+	"agent-dashboard/internal/runtime/docker"
 	"agent-dashboard/internal/runtime/host"
 )
 
@@ -44,7 +45,19 @@ func runRuntimeContractTest(t *testing.T, r runtime.Runtime) {
 		t.Fatalf("expected %d sessions, got %d", len(initial)+1, len(sessions))
 	}
 
-	// 4. Attach
+	// 4. Inspect running container/session
+	info, err := r.Inspect(ctx, handle)
+	if err != nil {
+		t.Fatalf("Inspect error: %v", err)
+	}
+	if info.Status != "running" {
+		t.Fatalf("expected running status, got %s", info.Status)
+	}
+	if info.OOMKilled {
+		t.Fatalf("expected OOMKilled false, got true")
+	}
+
+	// 5. Attach
 	pty, err := r.Attach(ctx, handle)
 	if err != nil {
 		t.Fatalf("Attach error: %v", err)
@@ -54,7 +67,7 @@ func runRuntimeContractTest(t *testing.T, r runtime.Runtime) {
 	}
 	_ = pty.Close()
 
-	// 5. Stats
+	// 6. Stats
 	stats, err := r.Stats(ctx, handle)
 	if err != nil {
 		t.Fatalf("Stats error: %v", err)
@@ -63,7 +76,7 @@ func runRuntimeContractTest(t *testing.T, r runtime.Runtime) {
 		t.Logf("Warning: 0 memory bytes returned in stats")
 	}
 
-	// 6. Destroy
+	// 7. Destroy
 	if err := r.Destroy(ctx, handle); err != nil {
 		t.Fatalf("Destroy error: %v", err)
 	}
@@ -85,4 +98,9 @@ func TestFakeRuntimeContract(t *testing.T) {
 func TestHostRuntimeContract(t *testing.T) {
 	h := host.NewHostRuntime()
 	runRuntimeContractTest(t, h)
+}
+
+func TestDockerRuntimeContract(t *testing.T) {
+	d := docker.NewDockerRuntime()
+	runRuntimeContractTest(t, d)
 }

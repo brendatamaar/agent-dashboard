@@ -524,6 +524,11 @@ func (s *Service) CreateWorktree(ctx context.Context, repoPath, baseBranch, newB
 		return fmt.Errorf("invalid branch name %q: %w", newBranch, err)
 	}
 
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0755); err != nil {
+		return fmt.Errorf("failed to create parent directory for worktree: %w", err)
+	}
+	_ = os.RemoveAll(worktreePath)
+
 	verifyCmd := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "--verify", baseBranch)
 	if err := verifyCmd.Run(); err != nil {
 		return fmt.Errorf("base branch %q does not exist: %w", baseBranch, err)

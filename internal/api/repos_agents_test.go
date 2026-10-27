@@ -52,10 +52,10 @@ func setupTestGitRepo(t *testing.T) string {
 	runGit("init")
 	runGit("config", "user.name", "Test")
 	runGit("config", "user.email", "test@test.com")
-	runGit("branch", "-M", "main")
 	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644)
 	runGit("add", "README.md")
 	runGit("commit", "-m", "init")
+	runGit("branch", "-M", "main")
 	return dir
 }
 
@@ -162,6 +162,24 @@ func TestReposAndAgentsAPI(t *testing.T) {
 	rec = doReq(http.MethodGet, "/api/agents", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	// Wait for asynchronous worktree setup and transition to running
+	var lastAgentState string
+	for i := 0; i < 100; i++ {
+		rec = doReq(http.MethodGet, "/api/agents/"+createdAgent.ID, nil)
+		if rec.Code == http.StatusOK {
+			var a store.AgentRecord
+			_ = json.Unmarshal(rec.Body.Bytes(), &a)
+			lastAgentState = a.State
+			if a.State == "running" {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if lastAgentState != "running" {
+		t.Fatalf("agent did not reach running state, current state: %s", lastAgentState)
 	}
 
 	// 5. POST /api/agents/{id}/message

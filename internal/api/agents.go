@@ -150,6 +150,21 @@ func (h *AgentsHandler) HandleStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 }
 
+func (h *AgentsHandler) HandleCancel(w http.ResponseWriter, r *http.Request) {
+	user := GetUserFromContext(r.Context())
+	id := r.PathValue("id")
+
+	if err := h.orch.CancelAgent(r.Context(), id); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if user != nil {
+		_ = h.store.WriteAudit(r.Context(), user.Username, "agent_cancel", id, "success")
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
 func (h *AgentsHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	user := GetUserFromContext(r.Context())
 	id := r.PathValue("id")

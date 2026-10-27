@@ -77,9 +77,10 @@ type InputApprovalDecision struct {
 func (InputApprovalDecision) isInput() {}
 
 type InputProcessExited struct {
-	Now      time.Time
-	AgentID  string
-	ExitCode int
+	Now       time.Time
+	AgentID   string
+	ExitCode  int
+	OOMKilled bool
 }
 
 func (InputProcessExited) isInput() {}
@@ -90,6 +91,13 @@ type InputStopRequested struct {
 }
 
 func (InputStopRequested) isInput() {}
+
+type InputCancelQueued struct {
+	Now     time.Time
+	AgentID string
+}
+
+func (InputCancelQueued) isInput() {}
 
 type InputDeleteRequested struct {
 	Now     time.Time
@@ -126,9 +134,11 @@ type CmdStartSession struct {
 	TmuxSession  string
 	Harness      string
 	Model        string
+	Runtime      string
 	Mode         string
 	Prompt       string
 	ResumeID     string
+	AutoApprove  bool
 }
 
 func (CmdStartSession) isCommand() {}

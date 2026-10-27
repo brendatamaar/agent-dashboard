@@ -72,6 +72,7 @@ type Orchestrator struct {
 	gitSvc             *git.Service
 	notifier           *notifier.Notifier
 	rt                 runtime.Runtime
+	runtimes           map[string]runtime.Runtime
 	harnesses          map[string]harness.Harness
 	broadcaster        *EventBroadcaster
 	decryptor          SecretDecryptor
@@ -93,11 +94,16 @@ func NewOrchestrator(
 		logger = slog.Default()
 	}
 	claudeAdapter := claude.NewAdapter()
+	runtimes := make(map[string]runtime.Runtime)
+	if rt != nil {
+		runtimes[rt.Name()] = rt
+	}
 	return &Orchestrator{
 		mgrState:           agent.NewManagerState(runningCap),
 		store:              s,
 		gitSvc:             gitSvc,
 		rt:                 rt,
+		runtimes:           runtimes,
 		harnesses:          map[string]harness.Harness{"claude": claudeAdapter},
 		broadcaster:        NewEventBroadcaster(),
 		decryptor:          decryptor,
@@ -106,6 +112,35 @@ func NewOrchestrator(
 		cancelFuncs:        make(map[string]context.CancelFunc),
 		pendingResolutions: make(map[string]chan string),
 	}
+}
+
+func (o *Orchestrator) RegisterRuntime(name string, rt runtime.Runtime) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.runtimes == nil {
+		o.runtimes = make(map[string]runtime.Runtime)
+	}
+	o.runtimes[name] = rt
+}
+
+func (o *Orchestrator) getRuntime(name string) runtime.Runtime {
+	if o.runtimes != nil {
+		if r, ok := o.runtimes[name]; ok {
+			return r
+		}
+	}
+	if o.rt != nil {
+		return o.rt
+	}
+	if o.runtimes != nil {
+		if r, ok := o.runtimes["docker"]; ok {
+			return r
+		}
+		if r, ok := o.runtimes["host"]; ok {
+			return r
+		}
+	}
+	return nil
 }
 
 func (o *Orchestrator) SetNotifier(n *notifier.Notifier) {
@@ -128,8 +163,11 @@ func (o *Orchestrator) Broadcaster() *EventBroadcaster {
 	return o.broadcaster
 }
 
-func (o *Orchestrator) Runtime() runtime.Runtime {
-	return o.rt
+func (o *Orchestrator) Runtime(name ...string) runtime.Runtime {
+	if len(name) > 0 {
+		return o.getRuntime(name[0])
+	}
+	return o.getRuntime("docker")
 }
 
 // Start boots the orchestrator, loads state from DB, checks running tmux sessions, and reconciles.
@@ -156,6 +194,8 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 			TmuxSession:      rec.TmuxSession,
 			HarnessSessionID: rec.HarnessSessionID,
 			State:            agent.State(rec.State),
+			FailureReason:    rec.FailureReason,
+			AutoApprove:      rec.AutoApprove,
 			CreatedAt:        rec.CreatedAt,
 			UpdatedAt:        rec.UpdatedAt,
 		}
@@ -165,15 +205,25 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 	}
 
-	// 2. Query running tmux sessions on the host
+	// 2. Query running sessions
 	runningSessions := make(map[string]bool)
-	sessions, err := o.rt.ListSessions(ctx)
-	if err == nil {
-		for _, s := range sessions {
-			runningSessions[s] = true
+	rt := o.getRuntime("host")
+	if rt != nil {
+		sessions, err := rt.ListSessions(ctx)
+		if err == nil {
+			for _, s := range sessions {
+				runningSessions[s] = true
+			}
 		}
-	} else {
-		o.logger.Warn("could not fetch host runtime sessions", "error", err)
+	}
+	docRt := o.getRuntime("docker")
+	if docRt != nil {
+		sessions, err := docRt.ListSessions(ctx)
+		if err == nil {
+			for _, s := range sessions {
+				runningSessions[s] = true
+			}
+		}
 	}
 
 	// 3. Reconcile boot state
@@ -210,6 +260,20 @@ func (o *Orchestrator) SubmitAgent(
 		baseBranch = "main"
 	}
 
+	rtName := "docker"
+	autoApprove := false
+	if r.SettingsJSON != "" {
+		var repoSet repo.RepoSettings
+		if err := json.Unmarshal([]byte(r.SettingsJSON), &repoSet); err == nil {
+			if repoSet.Runtime != "" {
+				rtName = repoSet.Runtime
+			}
+			if repoSet.AutoApprove && rtName == "docker" {
+				autoApprove = true
+			}
+		}
+	}
+
 	agentID := fmt.Sprintf("agent-%d", time.Now().UnixNano())
 	slug := repo.SanitizeSlug(prompt)
 	if customBranch != "" {
@@ -225,13 +289,14 @@ func (o *Orchestrator) SubmitAgent(
 		RepoPath:     r.Path,
 		Harness:      harnessName,
 		Model:        model,
-		Runtime:      "host",
+		Runtime:      rtName,
 		Mode:         mode,
 		Prompt:       prompt,
 		Branch:       branch,
 		BaseBranch:   baseBranch,
 		WorktreePath: worktreePath,
 		TmuxSession:  tmuxSession,
+		AutoApprove:  autoApprove,
 	}
 
 	var cmds []agent.Command
@@ -283,14 +348,12 @@ func (o *Orchestrator) RequestApproval(ctx context.Context, req agent.ApprovalRe
 		Now:     time.Now().UTC(),
 		Request: req,
 	})
-	o.mu.Unlock()
-
 	if err != nil {
-		o.mu.Lock()
 		delete(o.pendingResolutions, req.ID)
 		o.mu.Unlock()
 		return "deny", err
 	}
+	o.mu.Unlock()
 
 	go o.executeCommands(ctx, cmds)
 
@@ -301,12 +364,33 @@ func (o *Orchestrator) RequestApproval(ctx context.Context, req agent.ApprovalRe
 		o.mu.Lock()
 		delete(o.pendingResolutions, req.ID)
 		o.mu.Unlock()
-		return "abort", ctx.Err()
+		return "deny", ctx.Err()
 	}
 }
 
-// DecideApproval records user decision for an approval request and resolves any pending hook.
+func (o *Orchestrator) resolveApproval(approvalID, action string) {
+	o.mu.Lock()
+	ch, ok := o.pendingResolutions[approvalID]
+	if ok {
+		delete(o.pendingResolutions, approvalID)
+	}
+	o.mu.Unlock()
+
+	if ok && ch != nil {
+		select {
+		case ch <- action:
+		default:
+		}
+	}
+}
+
+// DecideApproval is an alias for ResolveApprovalFromUser.
 func (o *Orchestrator) DecideApproval(ctx context.Context, agentID, approvalID string, approved, always bool) error {
+	return o.ResolveApprovalFromUser(ctx, agentID, approvalID, approved, always)
+}
+
+// ResolveApprovalFromUser is invoked when user clicks Approve, Deny or Always Allow on the phone UI.
+func (o *Orchestrator) ResolveApprovalFromUser(ctx context.Context, agentID, approvalID string, approved, always bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -327,26 +411,15 @@ func (o *Orchestrator) DecideApproval(ctx context.Context, agentID, approvalID s
 	return nil
 }
 
-func (o *Orchestrator) resolveApproval(approvalID, action string) {
-	o.mu.Lock()
-	ch, ok := o.pendingResolutions[approvalID]
-	if ok {
-		delete(o.pendingResolutions, approvalID)
-	}
-	o.mu.Unlock()
-
-	if ok && ch != nil {
-		select {
-		case ch <- action:
-		default:
-		}
-	}
-}
-
-// StopAgent stops an agent and frees its concurrency slot.
+// StopAgent terminates an agent process, aborts approvals, and frees concurrency slots.
 func (o *Orchestrator) StopAgent(ctx context.Context, agentID string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	if cancel, ok := o.cancelFuncs[agentID]; ok {
+		cancel()
+		delete(o.cancelFuncs, agentID)
+	}
 
 	var cmds []agent.Command
 	var err error
@@ -358,19 +431,49 @@ func (o *Orchestrator) StopAgent(ctx context.Context, agentID string) error {
 		return err
 	}
 
+	go o.executeCommands(ctx, cmds)
+	return nil
+}
+
+// CancelAgent cancels a queued task or stops an active agent.
+func (o *Orchestrator) CancelAgent(ctx context.Context, agentID string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	if cancel, ok := o.cancelFuncs[agentID]; ok {
 		cancel()
 		delete(o.cancelFuncs, agentID)
 	}
 
-	go o.executeCommands(context.Background(), cmds)
+	var cmds []agent.Command
+	var err error
+	o.mgrState, cmds, err = agent.Step(o.mgrState, agent.InputCancelQueued{
+		Now:     time.Now().UTC(),
+		AgentID: agentID,
+	})
+	if err != nil {
+		o.mgrState, cmds, err = agent.Step(o.mgrState, agent.InputStopRequested{
+			Now:     time.Now().UTC(),
+			AgentID: agentID,
+		})
+	}
+	if err != nil {
+		return err
+	}
+
+	go o.executeCommands(ctx, cmds)
 	return nil
 }
 
-// DeleteAgent removes the agent, kills tmux, and cleans up the worktree.
+// DeleteAgent deletes an agent and removes its worktree.
 func (o *Orchestrator) DeleteAgent(ctx context.Context, agentID string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	if cancel, ok := o.cancelFuncs[agentID]; ok {
+		cancel()
+		delete(o.cancelFuncs, agentID)
+	}
 
 	var cmds []agent.Command
 	var err error
@@ -382,21 +485,19 @@ func (o *Orchestrator) DeleteAgent(ctx context.Context, agentID string) error {
 		return err
 	}
 
-	if cancel, ok := o.cancelFuncs[agentID]; ok {
-		cancel()
-		delete(o.cancelFuncs, agentID)
-	}
-
-	go o.executeCommands(context.Background(), cmds)
+	go o.executeCommands(ctx, cmds)
 	return nil
 }
 
-// GetAgent returns the current in-memory agent state.
-func (o *Orchestrator) GetAgent(agentID string) (agent.Agent, bool) {
+// GetAgent retrieves an agent from the pure state manager.
+func (o *Orchestrator) GetAgent(agentID string) (*agent.Agent, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	a, ok := o.mgrState.Agents[agentID]
-	return a, ok
+	if !ok {
+		return nil, false
+	}
+	return &a, true
 }
 
 // ListAgents returns all agents.
@@ -408,6 +509,21 @@ func (o *Orchestrator) ListAgents() []agent.Agent {
 		list = append(list, a)
 	}
 	return list
+}
+
+// Stats returns runtime CPU and RAM stats for an agent.
+func (o *Orchestrator) Stats(ctx context.Context, agentID string) (runtime.Usage, error) {
+	o.mu.Lock()
+	a, ok := o.mgrState.Agents[agentID]
+	o.mu.Unlock()
+	if !ok {
+		return runtime.Usage{}, fmt.Errorf("agent %q not found", agentID)
+	}
+	rt := o.getRuntime(a.Runtime)
+	if rt == nil {
+		return runtime.Usage{}, fmt.Errorf("no runtime for %q", a.Runtime)
+	}
+	return rt.Stats(ctx, runtime.Handle(a.TmuxSession))
 }
 
 func (o *Orchestrator) executeCommands(ctx context.Context, cmds []agent.Command) {
@@ -426,6 +542,8 @@ func (o *Orchestrator) executeCommands(ctx context.Context, cmds []agent.Command
 				TmuxSession:      c.Agent.TmuxSession,
 				HarnessSessionID: c.Agent.HarnessSessionID,
 				State:            string(c.Agent.State),
+				FailureReason:    c.Agent.FailureReason,
+				AutoApprove:      c.Agent.AutoApprove,
 			}
 			if err := o.store.CreateAgent(ctx, rec); err != nil {
 				o.logger.Error("failed to persist agent state", "agent", rec.ID, "error", err)
@@ -461,10 +579,22 @@ func (o *Orchestrator) executeCommands(ctx context.Context, cmds []agent.Command
 			go o.startAgentSession(ctx, c)
 
 		case agent.CmdSendInput:
-			_, _ = o.rt.Exec(ctx, runtime.Handle(c.TmuxSession), []string{string(c.Input)})
+			o.mu.Lock()
+			a := o.mgrState.Agents[c.AgentID]
+			o.mu.Unlock()
+			rt := o.getRuntime(a.Runtime)
+			if rt != nil {
+				_, _ = rt.Exec(ctx, runtime.Handle(c.TmuxSession), []string{string(c.Input)})
+			}
 
 		case agent.CmdKillSession:
-			_ = o.rt.Destroy(ctx, runtime.Handle(c.TmuxSession))
+			o.mu.Lock()
+			a := o.mgrState.Agents[c.AgentID]
+			o.mu.Unlock()
+			rt := o.getRuntime(a.Runtime)
+			if rt != nil {
+				_ = rt.Destroy(ctx, runtime.Handle(c.TmuxSession))
+			}
 
 		case agent.CmdRemoveWorktree:
 			go func(cc agent.CmdRemoveWorktree) {
@@ -519,9 +649,11 @@ func (o *Orchestrator) startAgentSession(ctx context.Context, c agent.CmdStartSe
 		ID:           c.AgentID,
 		Mode:         c.Mode,
 		Model:        c.Model,
+		Runtime:      c.Runtime,
 		Prompt:       c.Prompt,
 		WorktreePath: c.WorktreePath,
 		TmuxSession:  c.TmuxSession,
+		AutoApprove:  c.AutoApprove,
 	}
 
 	var cmdArgs []string
@@ -541,15 +673,24 @@ func (o *Orchestrator) startAgentSession(ctx context.Context, c agent.CmdStartSe
 		}
 	}
 
-	// Create runtime session in tmux
-	rtSpec := runtime.RuntimeSpec{
-		SessionName: c.TmuxSession,
-		WorkDir:     c.WorktreePath,
-		Command:     cmdArgs,
-		Env:         env,
+	rt := o.getRuntime(c.Runtime)
+	if rt == nil {
+		o.failAgent(c.AgentID, fmt.Sprintf("no runtime available for %q", c.Runtime))
+		return
 	}
 
-	_, err := o.rt.Create(ctx, rtSpec)
+	rtSpec := runtime.RuntimeSpec{
+		SessionName:   c.TmuxSession,
+		WorkDir:       c.WorktreePath,
+		WorktreeMount: c.WorktreePath,
+		Command:       cmdArgs,
+		Env:           env,
+		AutoApprove:   c.AutoApprove,
+		MemoryBytes:   700 * 1024 * 1024,
+		CPUs:          1.0,
+	}
+
+	_, err := rt.Create(ctx, rtSpec)
 	if err != nil {
 		o.failAgent(c.AgentID, fmt.Sprintf("failed to spawn runtime session: %v", err))
 		return
@@ -562,12 +703,60 @@ func (o *Orchestrator) startAgentSession(ctx context.Context, c agent.CmdStartSe
 
 	// If task mode, attach reader to parse output events
 	if c.Mode == "task" {
-		go o.consumeTaskOutput(agentCtx, c.AgentID, c.TmuxSession, harn)
+		go o.consumeTaskOutput(agentCtx, c.AgentID, c.TmuxSession, c.Runtime, harn)
+	}
+
+	// Monitor session status and OOM kill
+	go o.monitorSession(agentCtx, c.AgentID, c.TmuxSession, c.Runtime)
+}
+
+func (o *Orchestrator) monitorSession(ctx context.Context, agentID, tmuxSession, runtimeName string) {
+	rt := o.getRuntime(runtimeName)
+	if rt == nil {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			info, err := rt.Inspect(ctx, runtime.Handle(tmuxSession))
+			if err != nil {
+				continue
+			}
+			if info.Status == "stopped" || info.Status == "exited" || info.OOMKilled {
+				o.mu.Lock()
+				a, ok := o.mgrState.Agents[agentID]
+				if !ok || agent.IsTerminal(a.State) {
+					o.mu.Unlock()
+					return
+				}
+				var nextCmds []agent.Command
+				o.mgrState, nextCmds, _ = agent.Step(o.mgrState, agent.InputProcessExited{
+					Now:       time.Now().UTC(),
+					AgentID:   agentID,
+					ExitCode:  info.ExitCode,
+					OOMKilled: info.OOMKilled,
+				})
+				o.mu.Unlock()
+				if len(nextCmds) > 0 {
+					go o.executeCommands(context.Background(), nextCmds)
+				}
+				return
+			}
+		}
 	}
 }
 
-func (o *Orchestrator) consumeTaskOutput(ctx context.Context, agentID, tmuxSession string, harn harness.Harness) {
-	reader, err := o.rt.Exec(ctx, runtime.Handle(tmuxSession), nil)
+func (o *Orchestrator) consumeTaskOutput(ctx context.Context, agentID, tmuxSession, runtimeName string, harn harness.Harness) {
+	rt := o.getRuntime(runtimeName)
+	if rt == nil {
+		return
+	}
+	reader, err := rt.Exec(ctx, runtime.Handle(tmuxSession), nil)
 	if err != nil {
 		return
 	}

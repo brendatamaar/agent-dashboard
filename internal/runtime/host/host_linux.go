@@ -149,3 +149,11 @@ func (h *HostRuntime) ListSessions(ctx context.Context) ([]string, error) {
 	}
 	return sessions, nil
 }
+
+func (h *HostRuntime) Inspect(ctx context.Context, handle runtime.Handle) (runtime.ContainerInfo, error) {
+	cmd := exec.CommandContext(ctx, h.tmuxBinary, "has-session", "-t", string(handle))
+	if err := cmd.Run(); err != nil {
+		return runtime.ContainerInfo{Status: "stopped", ExitCode: 0, OOMKilled: false}, nil
+	}
+	return runtime.ContainerInfo{Status: "running", ExitCode: 0, OOMKilled: false}, nil
+}
