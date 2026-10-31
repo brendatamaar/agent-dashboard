@@ -13,6 +13,7 @@ import (
 	"agent-dashboard/internal/api"
 	"agent-dashboard/internal/core/repo"
 	"agent-dashboard/internal/core/system"
+	"agent-dashboard/internal/runtime"
 	"agent-dashboard/internal/shell/crypto"
 	"agent-dashboard/internal/store"
 )
@@ -48,6 +49,12 @@ func setupPhase3Server(t *testing.T) (*httptest.Server, *store.Store, string) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
+	srv.Orchestrator().RegisterRuntime("docker", runtime.NewFakeRuntime())
+	srv.Orchestrator().RegisterRuntime("host", runtime.NewFakeRuntime())
+	if n := srv.Orchestrator().Notifier(); n != nil {
+		n.SetHTTPClient(&http.Client{Transport: noNotificationTransport{}})
+	}
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	ts := httptest.NewServer(srv.Handler())
 	return ts, s, token
 }
@@ -55,7 +62,7 @@ func setupPhase3Server(t *testing.T) (*httptest.Server, *store.Store, string) {
 func TestPhase3RepoSettingsAndAutoApprove(t *testing.T) {
 	ts, s, token := setupPhase3Server(t)
 	defer ts.Close()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	ctx := context.Background()
 
 	// Create test repo
@@ -135,7 +142,7 @@ func TestPhase3RepoSettingsAndAutoApprove(t *testing.T) {
 func TestPhase3TelemetrySystem(t *testing.T) {
 	ts, s, token := setupPhase3Server(t)
 	defer ts.Close()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	req, _ := http.NewRequest("GET", ts.URL+"/api/system", nil)
 	req.AddCookie(&http.Cookie{Name: "agentd_session", Value: token})

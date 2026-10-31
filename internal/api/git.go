@@ -102,7 +102,10 @@ func (h *GitHandler) HandleStage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req StageRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 
 	if err := h.gitSvc.Stage(r.Context(), a.WorktreePath, req.Paths); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to stage files: %v", err))
@@ -122,7 +125,10 @@ func (h *GitHandler) HandleUnstage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req StageRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 
 	if err := h.gitSvc.Unstage(r.Context(), a.WorktreePath, req.Paths); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to unstage files: %v", err))
@@ -242,16 +248,29 @@ func (h *GitHandler) HandlePush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req PushRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 
+	repoRec, err := h.store.GetRepo(r.Context(), a.RepoID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "repo not found")
+		return
+	}
 	token, _ := h.decryptor.DecryptSecret(r.Context(), "github_token")
 
-	if err := h.gitSvc.Push(r.Context(), a.WorktreePath, token, a.Branch, req.Force, req.ConfirmMain); err != nil {
+	head, err := h.gitSvc.Status(r.Context(), a.WorktreePath, a.BaseBranch)
+	if err != nil || head.CurrentBranch == "" || head.CurrentBranch == "HEAD" {
+		writeError(w, http.StatusBadRequest, "cannot push detached or unknown HEAD")
+		return
+	}
+	if err := h.gitSvc.Push(r.Context(), a.WorktreePath, token, head.CurrentBranch, req.Force, req.ConfirmMain, repoRec.RemoteURL); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("git push failed: %v", err))
 		return
 	}
 
-	_ = h.store.WriteAudit(r.Context(), "user", "git_push", a.ID, fmt.Sprintf("branch=%s force=%v", a.Branch, req.Force))
+	_ = h.store.WriteAudit(r.Context(), "user", "git_push", a.ID, fmt.Sprintf("branch=%s force=%v", head.CurrentBranch, req.Force))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -264,9 +283,14 @@ func (h *GitHandler) HandlePullRebase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	repoRec, err := h.store.GetRepo(r.Context(), a.RepoID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "repo not found")
+		return
+	}
 	token, _ := h.decryptor.DecryptSecret(r.Context(), "github_token")
 
-	if err := h.gitSvc.PullRebase(r.Context(), a.WorktreePath, token, a.BaseBranch); err != nil {
+	if err := h.gitSvc.PullRebase(r.Context(), a.WorktreePath, token, a.BaseBranch, repoRec.RemoteURL); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("git pull rebase failed: %v", err))
 		return
 	}
@@ -313,7 +337,12 @@ func (h *GitHandler) HandleCreatePR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prResult, err := h.gitSvc.CreateGitHubPR(r.Context(), token, repoRec.RemoteURL, req.Title, req.Body, a.Branch, a.BaseBranch)
+	head, err := h.gitSvc.Status(r.Context(), a.WorktreePath, a.BaseBranch)
+	if err != nil || head.CurrentBranch == "" || head.CurrentBranch == "HEAD" {
+		writeError(w, http.StatusBadRequest, "cannot create PR for detached or unknown HEAD")
+		return
+	}
+	prResult, err := h.gitSvc.CreateGitHubPR(r.Context(), token, repoRec.RemoteURL, req.Title, req.Body, head.CurrentBranch, a.BaseBranch)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to open pull request: %v", err))
 		return

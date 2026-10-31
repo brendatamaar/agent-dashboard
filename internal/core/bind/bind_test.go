@@ -76,10 +76,10 @@ func TestValidateBindAddress(t *testing.T) {
 			wantErr:     false,
 		},
 		{
-			name:        "allow tailscale MagicDNS",
+			name:        "refuse unresolved tailscale MagicDNS",
 			addr:        "my-node.ts.net:8080",
 			allowPublic: false,
-			wantErr:     false,
+			wantErr:     true,
 		},
 		// Insecure mode (allowPublic = true)
 		{

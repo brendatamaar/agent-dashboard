@@ -20,12 +20,43 @@ import (
 )
 
 type AuthHandler struct {
-	store       *store.Store
-	cfg         Config
-	limiter     *RateLimiterMiddleware
-	webauthn    *webauthn.WebAuthn
-	sessionMu   sync.Mutex
-	waSessions  map[string]*webauthn.SessionData
+	store      *store.Store
+	cfg        Config
+	limiter    *RateLimiterMiddleware
+	webauthn   *webauthn.WebAuthn
+	sessionMu  sync.Mutex
+	waSessions map[string]passkeyChallenge
+}
+
+type passkeyChallenge struct {
+	data            *webauthn.SessionData
+	expires         time.Time
+	userID, purpose string
+}
+
+const maxPasskeyChallenges = 128
+
+func (a *AuthHandler) saveChallenge(key string, data *webauthn.SessionData, userID, purpose string) bool {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	now := time.Now()
+	for k, v := range a.waSessions {
+		if !now.Before(v.expires) {
+			delete(a.waSessions, k)
+		}
+	}
+	if len(a.waSessions) >= maxPasskeyChallenges {
+		return false
+	}
+	a.waSessions[key] = passkeyChallenge{data: data, expires: now.Add(5 * time.Minute), userID: userID, purpose: purpose}
+	return true
+}
+func (a *AuthHandler) takeChallenge(key, userID, purpose string) (*webauthn.SessionData, bool) {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	v, ok := a.waSessions[key]
+	delete(a.waSessions, key)
+	return v.data, ok && time.Now().Before(v.expires) && v.userID == userID && v.purpose == purpose
 }
 
 func NewAuthHandler(s *store.Store, cfg Config, limiter *RateLimiterMiddleware) (*AuthHandler, error) {
@@ -43,7 +74,7 @@ func NewAuthHandler(s *store.Store, cfg Config, limiter *RateLimiterMiddleware) 
 		cfg:        cfg,
 		limiter:    limiter,
 		webauthn:   wa,
-		waSessions: make(map[string]*webauthn.SessionData),
+		waSessions: make(map[string]passkeyChallenge),
 	}, nil
 }
 
@@ -87,7 +118,7 @@ func (a *AuthHandler) HandleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Username) < 3 || len(req.Password) < 8 {
+	if len(req.Username) < 3 || len(req.Username) > 128 || len(req.Password) < 8 || len(req.Password) > 72 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username (min 3 chars) and password (min 8 chars) required"})
 		return
 	}
@@ -122,11 +153,12 @@ func (a *AuthHandler) HandleSetup(w http.ResponseWriter, r *http.Request) {
 		IsSetupComplete: true,
 	}
 
-	if err := a.store.CreateUser(r.Context(), user); err != nil {
+	if err := a.store.CreateInitialUser(r.Context(), user); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create user: " + err.Error()})
 		return
 	}
 
+	a.limiter.RecordAttempt(clientIP(r), true)
 	_ = a.store.WriteAudit(r.Context(), req.Username, "setup", "user", "success")
 
 	// Create initial session for seamless onboarding
@@ -158,7 +190,6 @@ func (a *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, err := a.store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil || !user.IsSetupComplete {
-		a.limiter.RecordAttempt(ip, false)
 		_ = a.store.WriteAudit(r.Context(), req.Username, "login", "password", "failed_user_not_found")
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid username, password, or TOTP code"})
 		return
@@ -166,7 +197,6 @@ func (a *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		a.limiter.RecordAttempt(ip, false)
 		_ = a.store.WriteAudit(r.Context(), req.Username, "login", "password", "failed_bad_password")
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid username, password, or TOTP code"})
 		return
@@ -175,7 +205,6 @@ func (a *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// Verify TOTP if configured
 	if user.TOTPSecret != "" {
 		if !totp.Validate(req.TOTPCode, user.TOTPSecret) {
-			a.limiter.RecordAttempt(ip, false)
 			_ = a.store.WriteAudit(r.Context(), req.Username, "login", "totp", "failed_bad_totp")
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid username, password, or TOTP code"})
 			return
@@ -204,7 +233,7 @@ func (a *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		_ = a.store.DeleteSession(r.Context(), cookie.Value)
 	}
 
-	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	isSecure := r.TLS != nil || strings.HasPrefix(a.cfg.RPOrigin, "https://")
 	http.SetCookie(w, &http.Cookie{
 		Name:     "agentd_session",
 		Value:    "",
@@ -288,9 +317,10 @@ func (a *AuthHandler) HandlePasskeyBeginRegistration(w http.ResponseWriter, r *h
 	}
 
 	sessionKey := generateID("wa_reg")
-	a.sessionMu.Lock()
-	a.waSessions[sessionKey] = sessionData
-	a.sessionMu.Unlock()
+	if !a.saveChallenge(sessionKey, sessionData, user.ID, "registration") {
+		writeError(w, http.StatusTooManyRequests, "too many active passkey challenges")
+		return
+	}
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "agentd_wa_session",
@@ -318,10 +348,7 @@ func (a *AuthHandler) HandlePasskeyFinishRegistration(w http.ResponseWriter, r *
 		return
 	}
 
-	a.sessionMu.Lock()
-	sessionData, exists := a.waSessions[cookie.Value]
-	delete(a.waSessions, cookie.Value)
-	a.sessionMu.Unlock()
+	sessionData, exists := a.takeChallenge(cookie.Value, user.ID, "registration")
 
 	if !exists {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expired registration session"})
@@ -391,9 +418,10 @@ func (a *AuthHandler) HandlePasskeyBeginLogin(w http.ResponseWriter, r *http.Req
 	}
 
 	sessionKey := generateID("wa_login")
-	a.sessionMu.Lock()
-	a.waSessions[sessionKey] = sessionData
-	a.sessionMu.Unlock()
+	if !a.saveChallenge(sessionKey, sessionData, user.ID, "login") {
+		writeError(w, http.StatusTooManyRequests, "too many active passkey challenges")
+		return
+	}
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "agentd_wa_login_session",
@@ -424,10 +452,7 @@ func (a *AuthHandler) HandlePasskeyFinishLogin(w http.ResponseWriter, r *http.Re
 		sessionKey = cookie.Value
 	}
 
-	a.sessionMu.Lock()
-	sessionData, exists := a.waSessions[sessionKey]
-	delete(a.waSessions, sessionKey)
-	a.sessionMu.Unlock()
+	sessionData, exists := a.takeChallenge(sessionKey, userID, "login")
 
 	if !exists {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expired login session"})
@@ -452,6 +477,7 @@ func (a *AuthHandler) HandlePasskeyFinishLogin(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	a.limiter.RecordAttempt(clientIP(r), true)
 	_ = a.store.UpdatePasskeySignCount(r.Context(), credential.ID, credential.Authenticator.SignCount)
 
 	token, err := a.store.CreateSession(r.Context(), user.ID, a.cfg.SessionDuration)
@@ -470,7 +496,7 @@ func (a *AuthHandler) HandlePasskeyFinishLogin(w http.ResponseWriter, r *http.Re
 }
 
 func (a *AuthHandler) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
-	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	isSecure := r.TLS != nil || strings.HasPrefix(a.cfg.RPOrigin, "https://")
 	http.SetCookie(w, &http.Cookie{
 		Name:     "agentd_session",
 		Value:    token,

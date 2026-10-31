@@ -105,8 +105,8 @@ func (h *AgentsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		req.Model,
 		req.Mode,
 		req.Prompt,
-		req.BaseBranch,
 		req.CustomBranch,
+		req.BaseBranch,
 		req.Runtime,
 	)
 	if err != nil {
@@ -187,10 +187,24 @@ func (h *AgentsHandler) HandleGetEvents(w http.ResponseWriter, r *http.Request) 
 	afterSeqStr := r.URL.Query().Get("after_seq")
 	var afterSeq int64
 	if afterSeqStr != "" {
-		afterSeq, _ = strconv.ParseInt(afterSeqStr, 10, 64)
+		var err error
+		afterSeq, err = strconv.ParseInt(afterSeqStr, 10, 64)
+		if err != nil || afterSeq < 0 {
+			writeError(w, http.StatusBadRequest, "invalid after_seq")
+			return
+		}
 	}
 
-	records, err := h.store.GetEvents(r.Context(), id, afterSeq)
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 500 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 500")
+			return
+		}
+		limit = n
+	}
+	records, err := h.store.EventsPage(r.Context(), id, afterSeq, limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -199,4 +213,19 @@ func (h *AgentsHandler) HandleGetEvents(w http.ResponseWriter, r *http.Request) 
 		records = []store.EventRecord{}
 	}
 	writeJSON(w, http.StatusOK, records)
+}
+
+func (h *AgentsHandler) HandleResume(w http.ResponseWriter, r *http.Request) {
+	if err := h.orch.ResumeAgent(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed"})
+}
+func (h *AgentsHandler) HandleInterrupt(w http.ResponseWriter, r *http.Request) {
+	if err := h.orch.InterruptAgent(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "interrupted"})
 }

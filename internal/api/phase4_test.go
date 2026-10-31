@@ -12,6 +12,7 @@ import (
 
 	"agent-dashboard/internal/api"
 	"agent-dashboard/internal/core/notification"
+	"agent-dashboard/internal/runtime"
 	"agent-dashboard/internal/shell/notifier"
 	"agent-dashboard/internal/store"
 )
@@ -55,12 +56,19 @@ func setupPhase4Server(t *testing.T) (*api.Server, *store.Store, string) {
 		t.Fatalf("failed to create session: %v", err)
 	}
 
+	srv.Orchestrator().RegisterRuntime("docker", runtime.NewFakeRuntime())
+	srv.Orchestrator().RegisterRuntime("host", runtime.NewFakeRuntime())
+	if n := srv.Orchestrator().Notifier(); n != nil {
+		n.SetHTTPClient(&http.Client{Transport: noNotificationTransport{}})
+	}
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv, st, token
 }
 
 func TestPhase4AutomationAndSubagentsAPI(t *testing.T) {
 	srv, st, token := setupPhase4Server(t)
-	defer st.Close()
+	defer func() { _ = st.Close() }()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	handler := srv.Handler()
 
@@ -108,7 +116,7 @@ func TestPhase4AutomationAndSubagentsAPI(t *testing.T) {
 		ID:        "repo-p4",
 		Name:      "p4-repo",
 		RemoteURL: "https://github.com/example/p4.git",
-		Path:      filepath.Join(t.TempDir(), "repo-p4"),
+		Path:      setupTestGitRepo(t),
 	}
 	_ = st.CreateRepo(context.Background(), &repo)
 
@@ -125,6 +133,16 @@ func TestPhase4AutomationAndSubagentsAPI(t *testing.T) {
 	var createdSch store.Schedule
 	_ = json.Unmarshal(res.Body.Bytes(), &createdSch)
 
+	invalidSchedule := createdSch
+	invalidSchedule.Cron = "definitely-not-cron"
+	res = doAuthReq("PUT", "/api/schedules/"+createdSch.ID, invalidSchedule)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("invalid schedule update accepted: %d", res.Code)
+	}
+	saved, err := st.GetSchedule(context.Background(), createdSch.ID)
+	if err != nil || saved.Cron != createdSch.Cron {
+		t.Fatal("invalid cron update changed persisted schedule")
+	}
 	// Trigger schedule
 	res = doAuthReq("POST", "/api/schedules/"+createdSch.ID+"/trigger", nil)
 	if res.Code != http.StatusOK {

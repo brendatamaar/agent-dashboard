@@ -81,7 +81,7 @@ func main() {
 		l.Error("failed to open database", "error", err, "path", cfg.DBPath)
 		os.Exit(1)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	webFS, err := web.GetFS()
 	if err != nil {

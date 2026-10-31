@@ -167,11 +167,12 @@ func (h *AutomationHandler) HandleUpdateSchedule(w http.ResponseWriter, r *http.
 	}
 
 	req.ID = id
-	if req.Cron != "" {
-		if nextRun, err := scheduler.NextCronTime(req.Cron, time.Now().UTC()); err == nil {
-			req.NextRunAt = &nextRun
-		}
+	nextRun, err := scheduler.NextCronTime(req.Cron, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid cron expression")
+		return
 	}
+	req.NextRunAt = &nextRun
 
 	if err := h.store.UpdateSchedule(r.Context(), req); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -2,9 +2,11 @@ package notifier_test
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 
 	"agent-dashboard/internal/core/notification"
 	"agent-dashboard/internal/shell/notifier"
@@ -20,13 +22,14 @@ func TestNotifierChannelSettingsAndQuietHours(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	n, err := notifier.NewNotifier(st, nil)
 	if err != nil {
 		t.Fatalf("failed to create notifier: %v", err)
 	}
 
+	n.SetHTTPClient(&http.Client{Transport: fakeTransport{}})
 	settings := notifier.ChannelSettings{
 		Telegram: notifier.TelegramConfig{
 			Enabled:  true,
@@ -69,5 +72,11 @@ func TestNotifierChannelSettingsAndQuietHours(t *testing.T) {
 		Body:     "Test body",
 		Priority: notification.PriorityNormal,
 	})
-	_ = time.Now()
+
+}
+
+type fakeTransport struct{}
+
+func (fakeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header), Request: r}, nil
 }

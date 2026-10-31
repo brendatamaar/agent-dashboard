@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -13,6 +12,8 @@ import (
 	"time"
 
 	"agent-dashboard/internal/core/notification"
+	"agent-dashboard/internal/shell/crypto"
+	shelllogger "agent-dashboard/internal/shell/logger"
 	"agent-dashboard/internal/store"
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
@@ -46,21 +47,35 @@ type ChannelSettings struct {
 
 type Notifier struct {
 	store      *store.Store
+	vault      *crypto.Vault
 	logger     *slog.Logger
 	publicKey  string
 	privateKey string
 	settings   ChannelSettings
 	httpClient *http.Client
+	now        func() time.Time
 	mu         sync.RWMutex
 }
 
-func NewNotifier(st *store.Store, logger *slog.Logger) (*Notifier, error) {
+func NewNotifier(st *store.Store, logger *slog.Logger, vaults ...*crypto.Vault) (*Notifier, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
+	var vault *crypto.Vault
+	if len(vaults) > 0 {
+		vault = vaults[0]
+	} else {
+		var err error
+		vault, err = crypto.NewVault(st, "", logger)
+		if err != nil {
+			return nil, err
+		}
+	}
 	n := &Notifier{
 		store:  st,
+		vault:  vault,
+		now:    time.Now,
 		logger: logger,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -73,35 +88,54 @@ func NewNotifier(st *store.Store, logger *slog.Logger) (*Notifier, error) {
 	}
 
 	// Load channel settings from store if saved
-	n.loadSettings()
+	if err := n.loadSettings(); err != nil {
+		return nil, err
+	}
 
 	return n, nil
 }
 
-func (n *Notifier) loadSettings() {
-	ctx := context.Background()
-	sec, err := n.store.GetSecret(ctx, "notifier_settings")
-	if err == nil && len(sec.Ciphertext) > 0 {
-		var s ChannelSettings
-		if err := json.Unmarshal(sec.Ciphertext, &s); err == nil {
-			n.mu.Lock()
-			n.settings = s
-			n.mu.Unlock()
-		}
+func (n *Notifier) loadSettings() error {
+	data, err := n.vault.Get(context.Background(), "notifier_settings")
+	if crypto.IsNotFound(err) {
+		return nil
 	}
+	if err != nil {
+		return err
+	}
+	if err = json.Unmarshal([]byte(data), &n.settings); err != nil {
+		return err
+	}
+	shelllogger.RegisterSecrets(n.logger, n.settings.Telegram.BotToken)
+	return nil
 }
 
 func (n *Notifier) SaveSettings(ctx context.Context, s ChannelSettings) error {
-	n.mu.Lock()
-	n.settings = s
-	n.mu.Unlock()
-
+	if s.QuietHours.StartHour < 0 || s.QuietHours.StartHour > 23 || s.QuietHours.EndHour < 0 || s.QuietHours.EndHour > 23 || s.QuietHours.StartMin < 0 || s.QuietHours.StartMin > 59 || s.QuietHours.EndMin < 0 || s.QuietHours.EndMin > 59 {
+		return fmt.Errorf("invalid quiet hours")
+	}
+	if s.QuietHours.Timezone != "" {
+		if _, err := time.LoadLocation(s.QuietHours.Timezone); err != nil {
+			return fmt.Errorf("invalid timezone: %w", err)
+		}
+	}
 	data, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	return n.store.PutSecret(ctx, "sec_notifier", "notifier_settings", "notifier_settings", data)
+	if err = n.vault.Put(ctx, "notifier_settings", "notifier_settings", string(data)); err != nil {
+		return err
+	}
+	shelllogger.RegisterSecrets(n.logger, s.Telegram.BotToken)
+	n.mu.Lock()
+	n.settings = s
+	n.mu.Unlock()
+	return nil
 }
+
+// SetHTTPClient injects a transport for all channel delivery (including Web Push).
+// Configure it before sharing a notifier between goroutines.
+func (n *Notifier) SetHTTPClient(client *http.Client) { n.httpClient = client }
 
 func (n *Notifier) Settings() ChannelSettings {
 	n.mu.RLock()
@@ -111,17 +145,25 @@ func (n *Notifier) Settings() ChannelSettings {
 
 func (n *Notifier) ensureVAPIDKeys() error {
 	ctx := context.Background()
-	sec, err := n.store.GetSecret(ctx, "vapid_keys")
-	if err == nil && len(sec.Ciphertext) > 0 {
+	data, err := n.vault.Get(ctx, "vapid_keys")
+	if err == nil {
 		var keys struct {
 			Public  string `json:"public"`
 			Private string `json:"private"`
 		}
-		if err := json.Unmarshal(sec.Ciphertext, &keys); err == nil && keys.Public != "" && keys.Private != "" {
-			n.publicKey = keys.Public
-			n.privateKey = keys.Private
-			return nil
+		if err = json.Unmarshal([]byte(data), &keys); err != nil {
+			return err
 		}
+		if keys.Public == "" || keys.Private == "" {
+			return fmt.Errorf("invalid stored VAPID keys")
+		}
+		n.publicKey = keys.Public
+		n.privateKey = keys.Private
+		shelllogger.RegisterSecrets(n.logger, keys.Private)
+		return nil
+	}
+	if !crypto.IsNotFound(err) {
+		return err
 	}
 
 	// Generate new VAPID keys
@@ -138,12 +180,13 @@ func (n *Notifier) ensureVAPIDKeys() error {
 		return err
 	}
 
-	if err := n.store.PutSecret(ctx, "sec_vapid", "vapid_keys", "vapid_keys", keysJSON); err != nil {
-		n.logger.Warn("Failed to persist VAPID keys to store, using ephemeral keys", "error", err)
+	if err := n.vault.Put(ctx, "vapid_keys", "vapid_keys", string(keysJSON)); err != nil {
+		return err
 	}
 
 	n.publicKey = publicKey
 	n.privateKey = privateKey
+	shelllogger.RegisterSecrets(n.logger, privateKey)
 	n.logger.Info("Initialized Web Push VAPID keys", "publicKey", publicKey)
 	return nil
 }
@@ -182,16 +225,17 @@ func (n *Notifier) Send(ctx context.Context, sub store.PushSubscription, payload
 		},
 	}
 
-	resp, err := webpush.SendNotification(payloadBytes, &s, &webpush.Options{
+	resp, err := webpush.SendNotificationWithContext(ctx, payloadBytes, &s, &webpush.Options{
 		Subscriber:      "mailto:admin@agent-dashboard.local",
 		VAPIDPublicKey:  pub,
 		VAPIDPrivateKey: priv,
 		TTL:             86400,
+		HTTPClient:      n.httpClient,
 	})
 	if err != nil {
 		return fmt.Errorf("webpush send failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 		// Subscription is expired or invalid; clean up from database
@@ -237,13 +281,12 @@ func (n *Notifier) SendTelegram(ctx context.Context, payload NotificationPayload
 
 	resp, err := n.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("telegram request failed: %w", err)
+		return fmt.Errorf("telegram request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("telegram returned HTTP %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("telegram returned HTTP %d", resp.StatusCode)
 	}
 
 	return nil
@@ -281,7 +324,7 @@ func (n *Notifier) SendNtfy(ctx context.Context, payload NotificationPayload) er
 	if err != nil {
 		return fmt.Errorf("ntfy request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("ntfy returned HTTP %d", resp.StatusCode)
@@ -297,7 +340,12 @@ func (n *Notifier) NotifyAll(ctx context.Context, payload NotificationPayload) {
 	n.mu.RUnlock()
 
 	// Quiet hours check
-	now := time.Now().UTC()
+	now := n.now().UTC()
+	if qh.Timezone != "" {
+		if loc, err := time.LoadLocation(qh.Timezone); err == nil {
+			now = now.In(loc)
+		}
+	}
 	priority := payload.Priority
 	if priority == "" {
 		priority = notification.PriorityNormal

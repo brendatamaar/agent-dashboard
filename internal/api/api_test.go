@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"agent-dashboard/internal/api"
+	"agent-dashboard/internal/runtime"
 	"agent-dashboard/internal/shell/logger"
 	"agent-dashboard/internal/store"
 
@@ -43,6 +45,12 @@ func setupTestServer(t *testing.T) (*api.Server, *store.Store) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
+	srv.Orchestrator().RegisterRuntime("docker", runtime.NewFakeRuntime())
+	srv.Orchestrator().RegisterRuntime("host", runtime.NewFakeRuntime())
+	if n := srv.Orchestrator().Notifier(); n != nil {
+		n.SetHTTPClient(&http.Client{Transport: noNotificationTransport{}})
+	}
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv, s
 }
 
@@ -245,4 +253,10 @@ func TestAuthFlowAndProtectedEndpoints(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("login failed with code %d: %s", w.Code, w.Body.String())
 	}
+}
+
+type noNotificationTransport struct{}
+
+func (noNotificationTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("external notification delivery disabled in tests")
 }

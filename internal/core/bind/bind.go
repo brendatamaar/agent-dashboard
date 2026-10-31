@@ -3,92 +3,74 @@ package bind
 import (
 	"errors"
 	"fmt"
-	"net"
+	"strconv"
 	"strings"
 )
 
-var (
-	// ErrPublicBindNotAllowed is returned when an address resolves to a public or wildcard interface without explicit flag.
-	ErrPublicBindNotAllowed = errors.New("binding to public or wildcard address is forbidden without --insecure-allow-public-bind")
-	// ErrInvalidAddress is returned when the address format is invalid.
-	ErrInvalidAddress = errors.New("invalid bind address format")
-)
+var ErrPublicBindNotAllowed = errors.New("binding to public or wildcard address is forbidden without --insecure-allow-public-bind")
+var ErrInvalidAddress = errors.New("invalid bind address format")
 
-var (
-	// Tailscale IPv4 CGNAT range: 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
-	_, tailscaleIPv4Range, _ = net.ParseCIDR("100.64.0.0/10")
-	// Tailscale IPv6 ULA range: fd7a:115c:a1e0::/48
-	_, tailscaleIPv6Range, _ = net.ParseCIDR("fd7a:115c:a1e0::/48")
-)
-
-// IsTailscaleIP checks if an IP belongs to Tailscale's allocated address ranges.
-func IsTailscaleIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	return tailscaleIPv4Range.Contains(ip) || tailscaleIPv6Range.Contains(ip)
-}
-
-// IsLoopback checks if an IP is loopback (127.0.0.0/8 or ::1).
-func IsLoopback(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback()
-}
-
-// ValidateBindAddress verifies that the host in the address complies with the security bind policy.
-// Allowed by default: loopback (127.0.0.1, ::1, localhost) and Tailscale addresses.
-// Wildcards (0.0.0.0, ::, "") and non-Tailscale network interfaces require allowPublic = true.
+// ValidateBindAddress is a pure policy over literal addresses. DNS resolution
+// belongs to the shell; names never imply that an address is on Tailscale.
 func ValidateBindAddress(addr string, allowPublic bool) error {
 	addr = strings.TrimSpace(addr)
-	if addr == "" {
-		if !allowPublic {
-			return fmt.Errorf("%w: empty bind address defaults to wildcard", ErrPublicBindNotAllowed)
+	host := addr
+	if strings.HasPrefix(addr, "[") {
+		if end := strings.Index(addr, "]:"); end >= 0 {
+			host = addr[1:end]
 		}
+	} else if strings.Count(addr, ":") == 1 {
+		host = strings.SplitN(addr, ":", 2)[0]
+	}
+	if allowPublic {
 		return nil
 	}
-
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		// Could be host without port
-		host = addr
+	if strings.EqualFold(host, "localhost") || host == "::1" || host == "0:0:0:0:0:0:0:1" {
+		return nil
 	}
-
-	host = strings.Trim(host, "[]")
-
-	// Empty host or wildcard
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		if !allowPublic {
-			return fmt.Errorf("%w: %q", ErrPublicBindNotAllowed, host)
+	parts := strings.Split(host, ".")
+	if len(parts) == 4 {
+		octets := [4]int{}
+		valid := true
+		for i, p := range parts {
+			n, err := strconv.Atoi(p)
+			if err != nil || n < 0 || n > 255 || strconv.Itoa(n) != p {
+				valid = false
+				break
+			}
+			octets[i] = n
 		}
-		return nil
-	}
-
-	// Localhost is always allowed
-	if strings.EqualFold(host, "localhost") {
-		return nil
-	}
-
-	ip := net.ParseIP(host)
-	if ip != nil {
-		if IsLoopback(ip) || IsTailscaleIP(ip) {
+		if valid && (octets[0] == 127 || (octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127)) {
 			return nil
 		}
-		if !allowPublic {
-			return fmt.Errorf("%w: %q is not loopback or Tailscale", ErrPublicBindNotAllowed, host)
+	}
+	// Tailscale uses this fixed ULA /48; reject zones and invalid hex tails.
+	lower := strings.ToLower(host)
+	if strings.HasPrefix(lower, "fd7a:115c:a1e0:") && validIPv6(lower) {
+		return nil
+	}
+	return fmt.Errorf("%w: %q is not a literal loopback or Tailscale address", ErrPublicBindNotAllowed, host)
+}
+func validIPv6(host string) bool {
+	if strings.Count(host, "::") > 1 {
+		return false
+	}
+	parts := strings.Split(host, ":")
+	groups := 0
+	for _, p := range parts {
+		if p == "" {
+			continue
 		}
-		return nil
+		if len(p) > 4 {
+			return false
+		}
+		if _, err := strconv.ParseUint(p, 16, 16); err != nil {
+			return false
+		}
+		groups++
 	}
-
-	// Named host (e.g. tailscale magicDNS name like my-vps.ts.net)
-	if strings.HasSuffix(strings.ToLower(host), ".ts.net") {
-		return nil
+	if strings.Contains(host, "::") {
+		return groups < 8
 	}
-
-	if !allowPublic {
-		return fmt.Errorf("%w: hostname %q is not recognized as loopback or Tailscale", ErrPublicBindNotAllowed, host)
-	}
-
-	return nil
+	return groups == 8
 }

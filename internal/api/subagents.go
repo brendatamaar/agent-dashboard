@@ -3,9 +3,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"agent-dashboard/internal/core/repo"
 	"agent-dashboard/internal/store"
@@ -32,30 +29,10 @@ func (h *SubagentsHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentsDir := filepath.Join(rp.Path, ".claude", "agents")
-	entries, err := os.ReadDir(agentsDir)
+	defs, err := readSubagentDefs(rp.Path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			writeJSON(w, http.StatusOK, []SubagentDef{})
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusBadRequest, "unsafe or unreadable subagent directory")
 		return
-	}
-
-	var defs []SubagentDef
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
-			name := strings.TrimSuffix(entry.Name(), ".md")
-			filePath := filepath.Join(agentsDir, entry.Name())
-			data, err := os.ReadFile(filePath)
-			if err == nil {
-				defs = append(defs, SubagentDef{
-					Name:    name,
-					Content: string(data),
-				})
-			}
-		}
 	}
 
 	if defs == nil {
@@ -84,15 +61,8 @@ func (h *SubagentsHandler) HandleSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentsDir := filepath.Join(rp.Path, ".claude", "agents")
-	if err := os.MkdirAll(agentsDir, 0755); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create agents directory")
-		return
-	}
-
-	filePath := filepath.Join(agentsDir, name+".md")
-	if err := os.WriteFile(filePath, []byte(req.Content), 0644); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to write subagent definition")
+	if err := writeSubagentDef(rp.Path, name+".md", []byte(req.Content)); err != nil {
+		writeError(w, http.StatusBadRequest, "unsafe or unwritable subagent definition")
 		return
 	}
 
@@ -118,9 +88,8 @@ func (h *SubagentsHandler) HandleDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	filePath := filepath.Join(rp.Path, ".claude", "agents", name+".md")
-	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-		writeError(w, http.StatusInternalServerError, "failed to delete subagent definition")
+	if err := deleteSubagentDef(rp.Path, name+".md"); err != nil {
+		writeError(w, http.StatusBadRequest, "unsafe subagent definition")
 		return
 	}
 

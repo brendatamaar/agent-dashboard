@@ -63,7 +63,7 @@ func TestRateLimiterStep(t *testing.T) {
 	}
 
 	// Check after lockout expired
-	state, cmds = auth.Step(state, auth.CheckAllowed{Key: key, Now: baseTime.Add(20 * time.Minute)})
+	_, cmds = auth.Step(state, auth.CheckAllowed{Key: key, Now: baseTime.Add(20 * time.Minute)})
 	res = cmds[0].(auth.CheckResult)
 	if !res.Allowed {
 		t.Fatal("expected allowed after lockout expired")
@@ -85,7 +85,7 @@ func TestRateLimiterSuccessResets(t *testing.T) {
 
 	// Check
 	var cmds []auth.LimiterCommand
-	state, cmds = auth.Step(state, auth.CheckAllowed{Key: key, Now: now.Add(3 * time.Second)})
+	_, cmds = auth.Step(state, auth.CheckAllowed{Key: key, Now: now.Add(3 * time.Second)})
 	res := cmds[0].(auth.CheckResult)
 	if res.RemainingTries != cfg.MaxAttempts {
 		t.Fatalf("expected reset to max attempts %d, got %d", cfg.MaxAttempts, res.RemainingTries)
