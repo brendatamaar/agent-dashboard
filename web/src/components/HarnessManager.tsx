@@ -1,3 +1,4 @@
+import { errorMessage } from '../errors';
 import React, { useEffect, useState } from 'react';
 import { Cpu, RefreshCw, CheckCircle2, XCircle, Download } from 'lucide-react';
 import { HarnessInfo, listHarnesses, updateHarness } from '../api';
@@ -12,8 +13,8 @@ export const HarnessManager: React.FC<{ onNotify?: (msg: string) => void }> = ({
     try {
       const data = await listHarnesses();
       setHarnesses(data);
-    } catch (err: any) {
-      if (onNotify) onNotify(`Failed to fetch harnesses: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Failed to fetch harnesses: ${errorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -29,8 +30,8 @@ export const HarnessManager: React.FC<{ onNotify?: (msg: string) => void }> = ({
       const res = await updateHarness(name);
       if (onNotify) onNotify(`Updated ${name}: ${res.status}`);
       await fetchHarnesses();
-    } catch (err: any) {
-      if (onNotify) onNotify(`Update failed for ${name}: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Update failed for ${name}: ${errorMessage(err)}`);
     } finally {
       setUpdating(null);
     }

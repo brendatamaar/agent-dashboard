@@ -12,10 +12,15 @@ EnvironmentFile=-/etc/agent-dashboard/agent-dashboard.env
 ExecStart=/usr/local/bin/agent-dashboard -data-dir /var/lib/agent-dashboard
 Restart=on-failure
 RestartSec=5s
+# tmux/supervisors are durable sessions, not dashboard-owned shutdown work.
+KillMode=process
+TimeoutStopSec=15s
+UMask=0077
 
 # Security sandboxing
 ProtectSystem=full
 ProtectHome=read-only
+ReadWritePaths=/var/lib/agent-dashboard
 PrivateTmp=true
 LimitNOFILE=65536
 

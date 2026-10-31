@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,13 +41,24 @@ func (rl *RateLimiterMiddleware) Limit(next http.HandlerFunc) http.HandlerFunc {
 
 		rl.mu.Lock()
 		var cmds []auth.LimiterCommand
+		rl.state, _ = auth.Step(rl.state, auth.CleanupPrune{Now: now})
+		if _, exists := rl.state.Records[ip]; !exists && len(rl.state.Records) >= 4096 {
+			rl.mu.Unlock()
+			writeError(w, http.StatusTooManyRequests, "rate limiter capacity reached")
+			return
+		}
 		rl.state, cmds = auth.Step(rl.state, auth.CheckAllowed{Key: ip, Now: now})
+		for _, cmd := range cmds {
+			if result, ok := cmd.(auth.CheckResult); ok && result.Allowed {
+				rl.state, _ = auth.Step(rl.state, auth.RecordAttempt{Key: ip, Success: false, Now: now})
+			}
+		}
 		rl.mu.Unlock()
 
 		for _, cmd := range cmds {
 			if res, ok := cmd.(auth.CheckResult); ok {
 				if !res.Allowed {
-					w.Header().Set("Retry-After", res.RetryAfter.String())
+					w.Header().Set("Retry-After", strconv.Itoa(max(1, int(res.RetryAfter.Seconds()))))
 					writeJSON(w, http.StatusTooManyRequests, map[string]string{
 						"error": "too many attempts, please try again later",
 					})
@@ -84,7 +98,7 @@ func CSRFProtectionMiddleware(next http.Handler) http.Handler {
 		method := strings.ToUpper(r.Method)
 		if method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH" {
 			// Internal hook IPC endpoints do not require CSRF token
-			if strings.HasPrefix(r.URL.Path, "/api/internal/") {
+			if r.URL.Path == "/api/internal/hooks/approval" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -133,11 +147,15 @@ func GetUserFromContext(ctx context.Context) *store.User {
 }
 
 func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		parts := strings.Split(fwd, ",")
-		return strings.TrimSpace(parts[0])
+	// Forwarding headers are untrusted; key throttling by the normalized peer address.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
 	}
-	return r.RemoteAddr
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.Unmap().String()
+	}
+	return host
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -160,6 +178,19 @@ func RecoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 				})
 			}
 		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func BodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if r.ContentLength > 1<<20 {
+				writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds 1 MiB")
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

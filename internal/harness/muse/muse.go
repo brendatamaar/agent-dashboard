@@ -128,6 +128,7 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 	go func() {
 		defer close(outCh)
 		defer close(errCh)
+		defer harness.CloseOnCancel(ctx, r)()
 
 		scanner := bufio.NewScanner(r)
 		buf := make([]byte, 1024*1024)
@@ -149,6 +150,10 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 
 			var raw map[string]any
 			if err := json.Unmarshal(line, &raw); err != nil {
+				select {
+				case errCh <- fmt.Errorf("unparseable harness output; use raw terminal: %w", err):
+				default:
+				}
 				continue
 			}
 
@@ -164,13 +169,17 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				if m, ok := raw["model"].(string); ok {
 					ev.Payload["model"] = m
 				}
-				outCh <- ev
+				if !harness.SendEvent(ctx, outCh, ev) {
+					return
+				}
 
 			case "assistant_message", "message":
 				text, _ := raw["text"].(string)
 				if text != "" {
 					seq++
-					outCh <- events.NewMessageEvent(seq, now, "assistant", text)
+					if !harness.SendEvent(ctx, outCh, events.NewMessageEvent(seq, now, "assistant", text)) {
+						return
+					}
 				}
 
 			case "tool_execution", "tool_call":
@@ -183,12 +192,16 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 					input = raw["args"]
 				}
 				seq++
-				outCh <- events.NewToolCallEvent(seq, now, fmt.Sprintf("call_%d", seq), toolName, input)
+				if !harness.SendEvent(ctx, outCh, events.NewToolCallEvent(seq, now, fmt.Sprintf("call_%d", seq), toolName, input)) {
+					return
+				}
 
 			case "tool_output", "tool_result":
 				out := raw["output"]
 				seq++
-				outCh <- events.NewToolResultEvent(seq, now, fmt.Sprintf("call_%d", seq-1), out, false)
+				if !harness.SendEvent(ctx, outCh, events.NewToolResultEvent(seq, now, fmt.Sprintf("call_%d", seq-1), out, false)) {
+					return
+				}
 
 			case "subagent_started":
 				subID, _ := raw["subagent_id"].(string)
@@ -196,14 +209,18 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				prompt, _ := raw["prompt"].(string)
 				parentID, _ := raw["parent_agent_id"].(string)
 				seq++
-				outCh <- events.NewSubagentStartedEvent(seq, now, subID, subType, prompt, parentID)
+				if !harness.SendEvent(ctx, outCh, events.NewSubagentStartedEvent(seq, now, subID, subType, prompt, parentID)) {
+					return
+				}
 
 			case "subagent_finished":
 				subID, _ := raw["subagent_id"].(string)
 				result, _ := raw["result"].(string)
 				success, _ := raw["success"].(bool)
 				seq++
-				outCh <- events.NewSubagentFinishedEvent(seq, now, subID, result, success)
+				if !harness.SendEvent(ctx, outCh, events.NewSubagentFinishedEvent(seq, now, subID, result, success)) {
+					return
+				}
 
 			case "token_usage", "usage":
 				var inTok, outTok int
@@ -214,7 +231,9 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 					outTok = int(o)
 				}
 				seq++
-				outCh <- events.NewUsageEvent(seq, now, inTok, outTok, 0.0, "")
+				if !harness.SendEvent(ctx, outCh, events.NewUsageEvent(seq, now, inTok, outTok, 0.0, "")) {
+					return
+				}
 
 			case "session_end", "done":
 				msg, _ := raw["message"].(string)
@@ -226,18 +245,31 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 					outcome = "completed"
 				}
 				seq++
-				outCh <- events.NewDoneEvent(seq, now, msg, outcome)
+				if !harness.SendEvent(ctx, outCh, events.NewDoneEvent(seq, now, msg, outcome)) {
+					return
+				}
 
 			case "error":
 				msg, _ := raw["message"].(string)
 				seq++
-				outCh <- events.NewErrorEvent(seq, now, msg, raw)
+				if !harness.SendEvent(ctx, outCh, events.NewErrorEvent(seq, now, msg, raw)) {
+					return
+				}
+			default:
+				select {
+				case errCh <- fmt.Errorf("unsupported harness event; use raw terminal"):
+				default:
+				}
 			}
 		}
 
 		if err := scanner.Err(); err != nil && err != io.EOF {
 			atomic.AddInt64(&seq, 1)
-			errCh <- err
+			select {
+			case errCh <- err:
+			case <-ctx.Done():
+			default:
+			}
 		}
 	}()
 

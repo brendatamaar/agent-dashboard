@@ -1,4 +1,6 @@
 import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
+import type { EventRecord } from './core/eventStream';
+export type { NormalizedEvent } from './core/eventStream';
 
 export interface User {
   id: string;
@@ -90,13 +92,6 @@ export interface Agent {
   updated_at: string;
 }
 
-export interface NormalizedEvent {
-  seq: number;
-  type: 'message' | 'tool_call' | 'tool_result' | 'approval_needed' | 'usage' | 'done' | 'error' | 'subagent_started' | 'subagent_finished';
-  timestamp: string;
-  payload: Record<string, any>;
-}
-
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers || {});
   headers.set('X-Requested-With', 'XMLHttpRequest');
@@ -163,8 +158,9 @@ export async function deleteSecret(name: string): Promise<void> {
 }
 
 export async function registerPasskey(): Promise<void> {
-  const data = await apiFetch<any>('/api/auth/passkey/begin-registration', { method: 'POST' });
-  const options = data.publicKey || data;
+  type Options = Parameters<typeof startRegistration>[0];
+  const data = await apiFetch<Options | { publicKey: Options }>('/api/auth/passkey/begin-registration', { method: 'POST' });
+  const options = 'publicKey' in data ? data.publicKey : data;
   const attResp = await startRegistration(options);
   await apiFetch('/api/auth/passkey/finish-registration', {
     method: 'POST',
@@ -173,8 +169,9 @@ export async function registerPasskey(): Promise<void> {
 }
 
 export async function loginWithPasskey(): Promise<void> {
-  const data = await apiFetch<any>('/api/auth/passkey/begin-login', { method: 'POST' });
-  const options = data.publicKey || data;
+  type Options = Parameters<typeof startAuthentication>[0];
+  const data = await apiFetch<Options | { publicKey: Options }>('/api/auth/passkey/begin-login', { method: 'POST' });
+  const options = 'publicKey' in data ? data.publicKey : data;
   const asseResp = await startAuthentication(options);
   await apiFetch('/api/auth/passkey/finish-login', {
     method: 'POST',
@@ -211,6 +208,8 @@ export interface RepoSettings {
   auto_approve: boolean;
   image?: string;
   setup_command?: string;
+  env_vars?: Record<string, string>;
+  allowed_tools?: string[];
 }
 
 export async function getRepoSettings(repoId: string): Promise<RepoSettings> {
@@ -270,8 +269,16 @@ export async function deleteAgent(id: string): Promise<void> {
   await apiFetch(`/api/agents/${id}`, { method: 'DELETE' });
 }
 
-export async function getAgentEvents(id: string, afterSeq = 0): Promise<{ seq: number; type: string; payload_json: string }[]> {
-  return await apiFetch(`/api/agents/${id}/events?after_seq=${afterSeq}`);
+export async function getAgentEvents(id: string, afterSeq = 0, limit = 200, signal?: AbortSignal): Promise<EventRecord[]> {
+  return await apiFetch(`/api/agents/${encodeURIComponent(id)}/events?after_seq=${afterSeq}&limit=${limit}`, { signal });
+}
+
+export async function resumeAgent(id: string): Promise<void> {
+  await apiFetch(`/api/agents/${encodeURIComponent(id)}/resume`, { method: 'POST' });
+}
+
+export async function interruptAgent(id: string): Promise<void> {
+  await apiFetch(`/api/agents/${encodeURIComponent(id)}/interrupt`, { method: 'POST' });
 }
 
 

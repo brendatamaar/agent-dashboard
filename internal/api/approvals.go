@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -87,6 +88,8 @@ func (h *ApprovalsHandler) HandleDecide(w http.ResponseWriter, r *http.Request) 
 }
 
 type HookApprovalRequest struct {
+	RequestID string         `json:"request_id,omitempty"`
+	SessionID string         `json:"session_id,omitempty"`
 	AgentID   string         `json:"agent_id"`
 	ToolName  string         `json:"tool_name"`
 	ToolInput map[string]any `json:"tool_input,omitempty"`
@@ -108,7 +111,40 @@ func (h *ApprovalsHandler) HandleHookApproval(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	apprID := fmt.Sprintf("app_%d", time.Now().UnixNano())
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !h.orch.AuthenticateHook(req.AgentID, token) {
+		writeError(w, http.StatusUnauthorized, "invalid agent hook credentials")
+		return
+	}
+	if req.SessionID != "" {
+		invalid := len(req.SessionID) > 200
+		for _, r := range req.SessionID {
+			if r < 32 || r == 127 {
+				invalid = true
+				break
+			}
+		}
+		if invalid {
+			writeError(w, http.StatusBadRequest, "invalid session_id")
+			return
+		}
+	}
+
+	apprID := generateID("app")
+	if req.RequestID != "" {
+		raw, err := hex.DecodeString(strings.ReplaceAll(req.RequestID, "-", ""))
+		if err != nil || len(raw) != 16 || len(req.RequestID) != 36 || req.RequestID[8] != '-' || req.RequestID[13] != '-' || req.RequestID[18] != '-' || req.RequestID[23] != '-' {
+			writeError(w, http.StatusBadRequest, "request_id must be a UUID")
+			return
+		}
+		apprID = req.RequestID
+	}
+	if req.SessionID != "" {
+		if err := h.orch.RecordHarnessSession(r.Context(), req.AgentID, req.SessionID); err != nil {
+			writeError(w, http.StatusBadRequest, "failed to record harness session")
+			return
+		}
+	}
 	apprReq := agent.ApprovalRequest{
 		ID:        apprID,
 		AgentID:   req.AgentID,

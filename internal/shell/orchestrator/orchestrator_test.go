@@ -27,7 +27,7 @@ func TestOrchestratorLifecycleAndReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store error: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Create test repo in store
 	repoRecord := &store.Repo{
@@ -44,6 +44,7 @@ func TestOrchestratorLifecycleAndReconcile(t *testing.T) {
 	gitSvc := git.NewService(tempDir)
 	fakeRt := runtime.NewFakeRuntime()
 	orch := orchestrator.NewOrchestrator(s, gitSvc, fakeRt, dummyDecryptor{}, nil, 1)
+	defer func() { _ = orch.Shutdown(context.Background()) }()
 
 	// 1. Initial Start
 	if err := orch.Start(ctx); err != nil {
@@ -77,7 +78,11 @@ func TestOrchestratorLifecycleAndReconcile(t *testing.T) {
 	}
 
 	// 4. Test boot re-attach on restart
+	if err := orch.Shutdown(ctx); err != nil {
+		t.Fatalf("orchestrator shutdown error: %v", err)
+	}
 	orch2 := orchestrator.NewOrchestrator(s, gitSvc, fakeRt, dummyDecryptor{}, nil, 1)
+	defer func() { _ = orch2.Shutdown(context.Background()) }()
 	if err := orch2.Start(ctx); err != nil {
 		t.Fatalf("orchestrator 2 start error: %v", err)
 	}

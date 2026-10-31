@@ -1,3 +1,4 @@
+import { errorMessage } from '../errors';
 import React, { useEffect, useState } from 'react';
 import { Bell, Send, Moon, Save } from 'lucide-react';
 import { NotificationSettings as SettingsType, getNotificationSettings, updateNotificationSettings } from '../api';
@@ -15,8 +16,8 @@ export const NotificationSettings: React.FC<{ onNotify?: (msg: string) => void }
       try {
         const s = await getNotificationSettings();
         if (s && s.telegram) setSettings(s);
-      } catch (err: any) {
-        if (onNotify) onNotify(`Failed to load notification settings: ${err.message}`);
+      } catch (err: unknown) {
+        if (onNotify) onNotify(`Failed to load notification settings: ${errorMessage(err)}`);
       }
     })();
   }, []);
@@ -27,8 +28,8 @@ export const NotificationSettings: React.FC<{ onNotify?: (msg: string) => void }
     try {
       await updateNotificationSettings(settings);
       if (onNotify) onNotify('Notification channels and quiet hours updated');
-    } catch (err: any) {
-      if (onNotify) onNotify(`Failed to save settings: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Failed to save settings: ${errorMessage(err)}`);
     } finally {
       setSaving(false);
     }

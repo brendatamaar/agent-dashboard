@@ -26,14 +26,8 @@ func IsQuietHours(t time.Time, cfg QuietHoursConfig) bool {
 		return false
 	}
 
-	loc := time.UTC
-	if cfg.Timezone != "" {
-		if l, err := time.LoadLocation(cfg.Timezone); err == nil {
-			loc = l
-		}
-	}
-
-	localTime := t.In(loc)
+	// The shell supplies t already converted to the configured timezone.
+	localTime := t
 	currentMinutes := localTime.Hour()*60 + localTime.Minute()
 	startMinutes := cfg.StartHour*60 + cfg.StartMin
 	endMinutes := cfg.EndHour*60 + cfg.EndMin

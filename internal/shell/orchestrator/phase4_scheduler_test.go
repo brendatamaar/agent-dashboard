@@ -28,10 +28,11 @@ func TestOrchestratorSchedulerIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	gitSvc := git.NewService(filepath.Join(tmpDir, "workspace"))
 	orch := orchestrator.NewOrchestrator(st, gitSvc, &mockRt{}, nil, nil, 2)
+	defer func() { _ = orch.Shutdown(context.Background()) }()
 
 	// Verify Harness registry has all 4 harnesses
 	reg := orch.HarnessRegistry()

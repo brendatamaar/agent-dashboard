@@ -61,7 +61,7 @@ func TestGeminiParseEventsFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open fixture file: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	ctx := context.Background()
 	evCh, errCh := adapter.ParseEvents(ctx, f)

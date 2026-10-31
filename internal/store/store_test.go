@@ -19,7 +19,7 @@ func TestStoreFullFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// 1. Initial setup status
 	hasSetup, err := s.HasCompletedSetup(ctx)
@@ -139,7 +139,7 @@ func TestStoreReposAndAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// 1. Repos
 	repo := &store.Repo{

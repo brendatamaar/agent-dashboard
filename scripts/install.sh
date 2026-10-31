@@ -11,10 +11,14 @@ fi
 
 echo "==> Setting up agent-dashboard environment..."
 
+# Durable host sessions use the bundled supervisor via Python 3.
+apt-get update
+apt-get install -y --no-install-recommends git tmux python3 ca-certificates
+
 # 1. Create dedicated agentd user and group if not present
 if ! id -u agentd >/dev/null 2>&1; then
     echo "Creating system user 'agentd'..."
-    useradd -r -s /usr/sbin/nologin -m -d /var/lib/agent-dashboard agentd
+    useradd -r -s /bin/bash -m -d /var/lib/agent-dashboard agentd
 else
     echo "User 'agentd' already exists."
 fi
@@ -27,7 +31,7 @@ if getent group docker >/dev/null 2>&1; then
 fi
 
 # 2. Create state and configuration directories
-mkdir -p /var/lib/agent-dashboard
+mkdir -p /var/lib/agent-dashboard/workspace /var/lib/agent-dashboard/runtime
 mkdir -p /etc/agent-dashboard
 
 chown -R agentd:agentd /var/lib/agent-dashboard
@@ -47,8 +51,9 @@ AGENTD_BIND=127.0.0.1:8080
 AGENTD_DATA_DIR=/var/lib/agent-dashboard
 AGENTD_LOG_LEVEL=info
 
-# Master passphrase used to derive AES-256 encryption key for stored secrets at rest
-# Set a strong passphrase below:
+# Secrets use a separate owner-only .db.key file beside SQLite.
+# Back up this key separately; losing it makes encrypted secrets unrecoverable.
+# Optional original passphrase, used ONLY to migrate legacy encrypted secrets:
 # AGENTD_MASTER_PASSPHRASE=your-strong-master-passphrase-here
 
 # WebAuthn Passkey settings (set to your Tailscale MagicDNS name or custom host)
@@ -92,13 +97,16 @@ echo "     AGENTD_BIND=100.x.y.z:8080"
 echo "     AGENTD_RP_ID=your-node.ts.net"
 echo "     AGENTD_RP_ORIGIN=https://your-node.ts.net"
 echo ""
-echo "3. Enable and start the systemd service:"
+echo "3. Build the non-root sandbox image with the agentd account IDs:"
+echo "     docker build --build-arg AGENTD_UID=$(id -u agentd) --build-arg AGENTD_GID=$(id -g agentd) -t agentd/sandbox:latest \"$REPO_DIR/scripts/docker\""
+echo ""
+echo "4. Enable and start the systemd service:"
 echo "     sudo systemctl enable --now agent-dashboard"
 echo ""
-echo "4. Check service status and logs:"
+echo "5. Check service status and logs:"
 echo "     sudo systemctl status agent-dashboard"
 echo "     sudo journalctl -u agent-dashboard -f"
 echo ""
-echo "5. Verify listening ports (confirm NO public 0.0.0.0 bind):"
+echo "6. Verify listening ports (confirm NO public 0.0.0.0 bind):"
 echo "     ss -tlnp | grep agent-dashboard"
 echo ""

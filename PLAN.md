@@ -1,5 +1,25 @@
 # PLAN.md — agent-dashboard
 
+Canonical plan. `docs/PLAN.md` links here. Existing phase checkmarks describe
+implementation; phone/VPS gate acceptance remains a separate manual check.
+
+## Audit remediation — 2026-10-30
+
+Authorized across existing phases on branch `codex/audit-remediation`.
+Design and regression map: `docs/design/audit-remediation.md`.
+
+- [x] Prevent checkout collisions/data loss and isolate Git credentials/metadata.
+- [x] Repair secret storage, hooks/auth, WebSockets and deployment lifecycle.
+- [x] Serialize durable transitions/outbox, recovery, approvals and scheduled runs.
+- [x] Repair mobile styles, event replay/deep links and lifecycle controls.
+- [x] Add behavioral/regression checks, dependency updates and purity enforcement.
+- [x] Run `make verify`; record unavailable Linux/phone/provider checks explicitly.
+
+Final integrated verification passed on 2026-10-31, including the SQLite shutdown
+regression (20 race repetitions) and final dependency updates. Evidence and manual
+Linux/phone/provider acceptance limits: `docs/audit-remediation-results.md`.
+
+
 Build order for `PRD.md`. Work one phase at a time, tick tasks as they are done, and stop at each gate for the user to test and confirm. Read `AGENTS.md` first.
 
 Legend: `[ ]` todo · `[x]` done · **Spike** = a short investigation whose result is written to `docs/adr/` before building on it.

@@ -10,15 +10,14 @@ import (
 )
 
 type SecretsHandler struct {
-	store            *store.Store
-	masterPassphrase string
+	store   *store.Store
+	vault   *crypto.Vault
+	initErr error
 }
 
 func NewSecretsHandler(s *store.Store, masterPassphrase string) *SecretsHandler {
-	return &SecretsHandler{
-		store:            s,
-		masterPassphrase: masterPassphrase,
-	}
+	vault, err := crypto.NewVault(s, masterPassphrase, nil)
+	return &SecretsHandler{store: s, vault: vault, initErr: err}
 }
 
 func (s *SecretsHandler) HandleList(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +28,7 @@ func (s *SecretsHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	}
 	var filtered []store.Secret
 	for _, sec := range list {
-		if sec.Kind != "vapid_keys" {
+		if sec.Kind != "vapid_keys" && sec.Kind != "notifier_settings" {
 			filtered = append(filtered, sec)
 		}
 	}
@@ -63,22 +62,12 @@ func (s *SecretsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Derive master key from passphrase + user salt
-	passphrase := s.masterPassphrase
-	if passphrase == "" {
-		passphrase = user.PasswordHash // fallback to secure hash
-	}
-	masterKey := crypto.DeriveKey(passphrase, user.MasterSalt)
-
-	ciphertext, err := crypto.Encrypt([]byte(req.Value), masterKey)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "encryption failed"})
+	if s.initErr != nil {
+		writeError(w, http.StatusInternalServerError, "secret vault unavailable")
 		return
 	}
-
-	id := generateID("sec")
-	if err := s.store.PutSecret(r.Context(), id, req.Kind, req.Name, ciphertext); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save secret: " + err.Error()})
+	if err := s.vault.Put(r.Context(), req.Kind, req.Name, req.Value); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save secret")
 		return
 	}
 
@@ -110,25 +99,8 @@ func (s *SecretsHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 // DecryptSecret retrieves and decrypts a secret by name.
 func (s *SecretsHandler) DecryptSecret(ctx context.Context, name string) (string, error) {
-	sec, err := s.store.GetSecret(ctx, name)
-	if err != nil {
-		return "", err
+	if s.initErr != nil {
+		return "", s.initErr
 	}
-
-	user, err := s.store.GetUserByUsername(ctx, "admin")
-	if err != nil {
-		return "", err
-	}
-
-	passphrase := s.masterPassphrase
-	if passphrase == "" {
-		passphrase = user.PasswordHash
-	}
-	masterKey := crypto.DeriveKey(passphrase, user.MasterSalt)
-
-	plain, err := crypto.Decrypt(sec.Ciphertext, masterKey)
-	if err != nil {
-		return "", err
-	}
-	return string(plain), nil
+	return s.vault.Get(ctx, name)
 }

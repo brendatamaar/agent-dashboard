@@ -55,7 +55,7 @@ func TestGitServiceWorktreeAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp workspace: %v", err)
 	}
-	defer os.RemoveAll(workspaceDir)
+	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
 	svc := NewService(workspaceDir)
 	ctx := context.Background()
@@ -121,7 +121,7 @@ func TestGitServiceOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp workspace: %v", err)
 	}
-	defer os.RemoveAll(workspaceDir)
+	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
 	svc := NewService(workspaceDir)
 	ctx := context.Background()
@@ -221,6 +221,14 @@ func TestGitServiceOperations(t *testing.T) {
 
 func TestCreateGitHubPR(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/myorg/myrepo/pulls" {
+			t.Errorf("wrong PR endpoint %s", r.URL.Path)
+		}
+		var payload map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		if payload["head"] != "agent/fix" || payload["title"] != "Fix payment bug" {
+			t.Errorf("wrong PR payload: %v", payload)
+		}
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
@@ -241,23 +249,13 @@ func TestCreateGitHubPR(t *testing.T) {
 	defer ts.Close()
 
 	svc := NewService(t.TempDir())
-	// Use custom test client that redirects to test server
 	svc.httpClient = ts.Client()
-
-	// Direct call to GitHub PR logic via test server URL
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL, strings.NewReader(`{"title":"Fix payment bug"}`))
-	req.Header.Set("Authorization", "Bearer test-gh-token")
-	resp, err := ts.Client().Do(req)
+	svc.apiBaseURL = ts.URL
+	pr, err := svc.CreateGitHubPR(context.Background(), "test-gh-token", "https://github.com/myorg/myrepo", "Fix payment bug", "Body", "agent/fix", "main")
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	var pr PRResult
-	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
-		t.Fatalf("failed to decode: %v", err)
+		t.Fatalf("CreateGitHubPR failed: %v", err)
 	}
 	if pr.Number != 12 || pr.HTMLURL != "https://github.com/myorg/myrepo/pull/12" {
-		t.Fatalf("unexpected PR result: %+v", pr)
+		t.Fatalf("unexpected PR: %+v", pr)
 	}
 }

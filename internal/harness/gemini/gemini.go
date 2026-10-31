@@ -18,6 +18,8 @@ import (
 	"agent-dashboard/internal/harness"
 )
 
+// Adapter command flags checked against installed gemini 0.65.0 --help on
+// 2026-10-30: -p, --output-format stream-json, --resume, --model and --approval-mode yolo.
 type Adapter struct {
 	binaryPath string
 }
@@ -80,6 +82,9 @@ func (a *Adapter) StartCommand(spec agent.AgentSpec) []string {
 		if spec.Prompt != "" {
 			cmd = append(cmd, spec.Prompt)
 		}
+		if spec.AutoApprove {
+			cmd = append(cmd, "--approval-mode", "yolo")
+		}
 		return cmd
 	}
 
@@ -94,6 +99,9 @@ func (a *Adapter) StartCommand(spec agent.AgentSpec) []string {
 	if spec.Model != "" {
 		cmd = append(cmd, "--model", spec.Model)
 	}
+	if spec.AutoApprove {
+		cmd = append(cmd, "--approval-mode", "yolo")
+	}
 	return cmd
 }
 
@@ -102,6 +110,9 @@ func (a *Adapter) ResumeCommand(spec agent.AgentSpec, sessionID string) []string
 		cmd := []string{a.binaryPath, "--resume", sessionID}
 		if spec.Model != "" {
 			cmd = append(cmd, "--model", spec.Model)
+		}
+		if spec.AutoApprove {
+			cmd = append(cmd, "--approval-mode", "yolo")
 		}
 		return cmd
 	}
@@ -116,6 +127,9 @@ func (a *Adapter) ResumeCommand(spec agent.AgentSpec, sessionID string) []string
 	cmd = append(cmd, "--output-format", "stream-json", "--resume", sessionID)
 	if spec.Model != "" {
 		cmd = append(cmd, "--model", spec.Model)
+	}
+	if spec.AutoApprove {
+		cmd = append(cmd, "--approval-mode", "yolo")
 	}
 	return cmd
 }
@@ -134,6 +148,7 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 	go func() {
 		defer close(outCh)
 		defer close(errCh)
+		defer harness.CloseOnCancel(ctx, r)()
 
 		scanner := bufio.NewScanner(r)
 		buf := make([]byte, 1024*1024)
@@ -155,6 +170,10 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 
 			var raw map[string]any
 			if err := json.Unmarshal(line, &raw); err != nil {
+				select {
+				case errCh <- fmt.Errorf("unparseable harness output; use raw terminal: %w", err):
+				default:
+				}
 				continue
 			}
 
@@ -170,7 +189,9 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				if m, ok := raw["model"].(string); ok {
 					ev.Payload["model"] = m
 				}
-				outCh <- ev
+				if !harness.SendEvent(ctx, outCh, ev) {
+					return
+				}
 
 			case "content", "message":
 				role, _ := raw["role"].(string)
@@ -178,23 +199,48 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 					role = "assistant"
 				}
 				text, _ := raw["text"].(string)
+				if text == "" {
+					text, _ = raw["content"].(string)
+				}
 				if text != "" {
 					seq++
-					outCh <- events.NewMessageEvent(seq, now, role, text)
+					if !harness.SendEvent(ctx, outCh, events.NewMessageEvent(seq, now, role, text)) {
+						return
+					}
 				}
 
-			case "tool_call":
+			case "tool_call", "tool_use":
 				callID, _ := raw["call_id"].(string)
+				if callID == "" {
+					callID, _ = raw["tool_id"].(string)
+				}
 				name, _ := raw["name"].(string)
+				if name == "" {
+					name, _ = raw["tool_name"].(string)
+				}
 				args := raw["args"]
+				if args == nil {
+					args = raw["parameters"]
+				}
 				seq++
-				outCh <- events.NewToolCallEvent(seq, now, callID, name, args)
+				if !harness.SendEvent(ctx, outCh, events.NewToolCallEvent(seq, now, callID, name, args)) {
+					return
+				}
 
 			case "tool_response", "tool_result":
 				callID, _ := raw["call_id"].(string)
+				if callID == "" {
+					callID, _ = raw["tool_id"].(string)
+				}
 				out := raw["output"]
+				status, _ := raw["status"].(string)
+				if out == nil {
+					out = raw["error"]
+				}
 				seq++
-				outCh <- events.NewToolResultEvent(seq, now, callID, out, false)
+				if !harness.SendEvent(ctx, outCh, events.NewToolResultEvent(seq, now, callID, out, status == "error")) {
+					return
+				}
 
 			case "subagent_started":
 				subID, _ := raw["subagent_id"].(string)
@@ -202,14 +248,18 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				prompt, _ := raw["prompt"].(string)
 				parentID, _ := raw["parent_agent_id"].(string)
 				seq++
-				outCh <- events.NewSubagentStartedEvent(seq, now, subID, subType, prompt, parentID)
+				if !harness.SendEvent(ctx, outCh, events.NewSubagentStartedEvent(seq, now, subID, subType, prompt, parentID)) {
+					return
+				}
 
 			case "subagent_finished":
 				subID, _ := raw["subagent_id"].(string)
 				result, _ := raw["result"].(string)
 				success, _ := raw["success"].(bool)
 				seq++
-				outCh <- events.NewSubagentFinishedEvent(seq, now, subID, result, success)
+				if !harness.SendEvent(ctx, outCh, events.NewSubagentFinishedEvent(seq, now, subID, result, success)) {
+					return
+				}
 
 			case "usage":
 				var promptTok, compTok int
@@ -220,26 +270,61 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 					compTok = int(c)
 				}
 				seq++
-				outCh <- events.NewUsageEvent(seq, now, promptTok, compTok, 0.0, "")
+				if !harness.SendEvent(ctx, outCh, events.NewUsageEvent(seq, now, promptTok, compTok, 0.0, "")) {
+					return
+				}
 
+			case "result":
+				if usage, ok := raw["stats"].(map[string]any); ok {
+					input, _ := usage["input_tokens"].(float64)
+					output, _ := usage["output_tokens"].(float64)
+					seq++
+					if !harness.SendEvent(ctx, outCh, events.NewUsageEvent(seq, now, int(input), int(output), 0, "")) {
+						return
+					}
+				}
+				status, _ := raw["status"].(string)
+				seq++
+				if status == "error" {
+					if !harness.SendEvent(ctx, outCh, events.NewErrorEvent(seq, now, "Gemini result failed", raw)) {
+						return
+					}
+				} else {
+					if !harness.SendEvent(ctx, outCh, events.NewDoneEvent(seq, now, "", "completed")) {
+						return
+					}
+				}
 			case "finish", "done":
 				summary, _ := raw["summary"].(string)
 				if summary == "" {
 					summary, _ = raw["result"].(string)
 				}
 				seq++
-				outCh <- events.NewDoneEvent(seq, now, summary, "completed")
+				if !harness.SendEvent(ctx, outCh, events.NewDoneEvent(seq, now, summary, "completed")) {
+					return
+				}
 
 			case "error":
 				msg, _ := raw["message"].(string)
 				seq++
-				outCh <- events.NewErrorEvent(seq, now, msg, raw)
+				if !harness.SendEvent(ctx, outCh, events.NewErrorEvent(seq, now, msg, raw)) {
+					return
+				}
+			default:
+				select {
+				case errCh <- fmt.Errorf("unsupported harness event; use raw terminal"):
+				default:
+				}
 			}
 		}
 
 		if err := scanner.Err(); err != nil && err != io.EOF {
 			atomic.AddInt64(&seq, 1)
-			errCh <- err
+			select {
+			case errCh <- err:
+			case <-ctx.Done():
+			default:
+			}
 		}
 	}()
 

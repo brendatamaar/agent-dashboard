@@ -1,6 +1,7 @@
 package store
 
 import (
+	"agent-dashboard/internal/core/scrub"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -21,7 +23,9 @@ var (
 )
 
 type Store struct {
-	db *sql.DB
+	db            *sql.DB
+	auditMu       sync.RWMutex
+	auditRedactor func(string) string
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
@@ -65,14 +69,14 @@ func (s *Store) DB() *sql.DB {
 
 // User represents the administrative single-user.
 type User struct {
-	ID               string
-	Username         string
-	PasswordHash     string
-	TOTPSecret       string
-	MasterSalt       []byte
-	IsSetupComplete  bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID              string
+	Username        string
+	PasswordHash    string
+	TOTPSecret      string
+	MasterSalt      []byte
+	IsSetupComplete bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // Passkey represents a registered WebAuthn credential.
@@ -211,7 +215,7 @@ func (s *Store) GetPasskeysForUser(ctx context.Context, userID string) ([]Passke
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var passkeys []Passkey
 	for rows.Next() {
@@ -341,7 +345,7 @@ func (s *Store) ListSecrets(ctx context.Context) ([]Secret, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var list []Secret
 	for rows.Next() {
@@ -360,12 +364,31 @@ func (s *Store) DeleteSecret(ctx context.Context, name string) error {
 	return err
 }
 
+// SetAuditRedactor shares dynamic secret knowledge with the storage boundary.
+// Callbacks run outside auditMu, so callbacks may safely update secret registries.
+func (s *Store) SetAuditRedactor(redact func(string) string) {
+	s.auditMu.Lock()
+	s.auditRedactor = redact
+	s.auditMu.Unlock()
+}
+
+// RedactAudit always applies known token patterns, even without server wiring.
+func (s *Store) RedactAudit(value string) string {
+	s.auditMu.RLock()
+	redact := s.auditRedactor
+	s.auditMu.RUnlock()
+	if redact != nil {
+		value = redact(value)
+	}
+	return scrub.Scrub(value)
+}
+
 // WriteAudit logs an action in the audit log.
 func (s *Store) WriteAudit(ctx context.Context, actor, action, target, result string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO audit_log (actor, action, target, result, created_at)
 		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, actor, action, target, result)
+	`, s.RedactAudit(actor), s.RedactAudit(action), s.RedactAudit(target), s.RedactAudit(result))
 	return err
 }
 
@@ -381,7 +404,7 @@ func (s *Store) GetAuditLogs(ctx context.Context, limit, offset int) ([]AuditEnt
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []AuditEntry
 	for rows.Next() {
@@ -393,7 +416,6 @@ func (s *Store) GetAuditLogs(ctx context.Context, limit, offset int) ([]AuditEnt
 	}
 	return entries, rows.Err()
 }
-
 
 // Repo represents a managed git repository.
 type Repo struct {
@@ -442,7 +464,7 @@ func (s *Store) ListRepos(ctx context.Context) ([]Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var repos []Repo
 	for rows.Next() {
@@ -558,7 +580,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]AgentRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var agents []AgentRecord
 	for rows.Next() {
@@ -600,25 +622,7 @@ func (s *Store) AppendEvent(ctx context.Context, agentID string, seq int64, even
 
 // GetEvents retrieves all events for an agent with seq > afterSeq.
 func (s *Store) GetEvents(ctx context.Context, agentID string, afterSeq int64) ([]EventRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, agent_id, seq, type, payload_json, created_at
-		FROM events WHERE agent_id = ? AND seq > ?
-		ORDER BY seq ASC
-	`, agentID, afterSeq)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var events []EventRecord
-	for rows.Next() {
-		var e EventRecord
-		if err := rows.Scan(&e.ID, &e.AgentID, &e.Seq, &e.Type, &e.PayloadJSON, &e.CreatedAt); err != nil {
-			return nil, err
-		}
-		events = append(events, e)
-	}
-	return events, rows.Err()
+	return s.EventsPage(ctx, agentID, afterSeq, 200)
 }
 
 // ApprovalRecord represents an action requiring user approval.
@@ -695,7 +699,7 @@ func (s *Store) ListApprovals(ctx context.Context, agentID string) ([]ApprovalRe
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var approvals []ApprovalRecord
 	for rows.Next() {
@@ -741,7 +745,7 @@ func (s *Store) ListPushSubscriptions(ctx context.Context) ([]PushSubscription, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var subs []PushSubscription
 	for rows.Next() {
@@ -759,7 +763,6 @@ func (s *Store) DeletePushSubscription(ctx context.Context, endpoint string) err
 	_, err := s.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE endpoint = ?", endpoint)
 	return err
 }
-
 
 // Template represents a saved prompt and settings preset.
 type Template struct {
@@ -815,7 +818,7 @@ func (s *Store) ListTemplates(ctx context.Context) ([]Template, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var templates []Template
 	for rows.Next() {
@@ -880,7 +883,7 @@ func (s *Store) ListSchedules(ctx context.Context) ([]Schedule, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var schedules []Schedule
 	for rows.Next() {

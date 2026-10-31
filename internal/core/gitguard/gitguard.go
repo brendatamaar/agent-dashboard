@@ -16,11 +16,13 @@ var (
 )
 
 // ProtectedBranches lists default protected branch patterns.
-var ProtectedBranches = []string{
-	"main",
-	"master",
-	"production",
-	"release/*",
+func protectedBranches() []string {
+	return []string{
+		"main",
+		"master",
+		"production",
+		"release/*",
+	}
 }
 
 // IsProtected checks if the given branch name matches any protected pattern.
@@ -29,7 +31,7 @@ func IsProtected(branch string) bool {
 	if branch == "" {
 		return false
 	}
-	for _, p := range ProtectedBranches {
+	for _, p := range protectedBranches() {
 		if strings.HasSuffix(p, "/*") {
 			prefix := strings.TrimSuffix(p, "/*")
 			if strings.HasPrefix(branch, prefix+"/") {
@@ -50,7 +52,7 @@ type PushPolicy struct {
 // DefaultPushPolicy returns the standard guardrail policy.
 func DefaultPushPolicy() PushPolicy {
 	return PushPolicy{
-		ProtectedBranches: ProtectedBranches,
+		ProtectedBranches: protectedBranches(),
 	}
 }
 

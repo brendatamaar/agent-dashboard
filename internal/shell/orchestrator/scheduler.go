@@ -1,114 +1,100 @@
 package orchestrator
 
 import (
-	"context"
-	"time"
-
+	"agent-dashboard/internal/core/agent"
 	"agent-dashboard/internal/core/scheduler"
 	"agent-dashboard/internal/harness"
+	"context"
+	"encoding/json"
+	"time"
 )
 
-func (o *Orchestrator) HarnessRegistry() *harness.Registry {
-	return o.harnessRegistry
-}
-
+func (o *Orchestrator) HarnessRegistry() *harness.Registry { return o.harnessRegistry }
 func (o *Orchestrator) ReloadSchedules(ctx context.Context) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	schedules, err := o.store.ListSchedules(ctx)
+	records, err := o.store.ListSchedules(ctx)
 	if err != nil {
 		return err
 	}
-	var items []scheduler.ScheduleItem
-	for _, sc := range schedules {
-		items = append(items, scheduler.ScheduleItem{
-			ID:         sc.ID,
-			TemplateID: sc.TemplateID,
-			RepoID:     sc.RepoID,
-			Cron:       sc.Cron,
-			Enabled:    sc.Enabled,
-			LastRunAt:  sc.LastRunAt,
-			NextRunAt:  sc.NextRunAt,
-		})
+	items := make([]scheduler.ScheduleItem, 0, len(records))
+	for _, r := range records {
+		items = append(items, scheduler.ScheduleItem{ID: r.ID, TemplateID: r.TemplateID, RepoID: r.RepoID, Cron: r.Cron, Enabled: r.Enabled, LastRunAt: r.LastRunAt, NextRunAt: r.NextRunAt})
 	}
-
-	var cmds []scheduler.Command
-	o.schedulerState, cmds, err = scheduler.Step(o.schedulerState, scheduler.InputSetSchedules{Schedules: items})
+	st, _, err := scheduler.Step(o.schedulerState, scheduler.InputSetSchedules{Schedules: items})
 	if err != nil {
 		return err
 	}
-	go o.executeSchedulerCommands(ctx, cmds)
-	return nil
+	return o.commitLocked(ctx, o.mgrState, st, nil)
 }
-
-func (o *Orchestrator) TriggerSchedule(ctx context.Context, scheduleID string) error {
-	o.mu.Lock()
-	st, cmds, err := scheduler.Step(o.schedulerState, scheduler.InputTriggerManual{
-		ScheduleID: scheduleID,
-		Now:        time.Now().UTC(),
-	})
-	if err != nil {
-		o.mu.Unlock()
-		return err
-	}
-	o.schedulerState = st
-	o.mu.Unlock()
-
-	go o.executeSchedulerCommands(ctx, cmds)
-	return nil
+func (o *Orchestrator) TriggerSchedule(ctx context.Context, id string) error {
+	return o.schedulerTransition(ctx, scheduler.InputTriggerManual{ScheduleID: id, Now: time.Now().UTC()})
 }
-
 func (o *Orchestrator) TickScheduler(ctx context.Context, now time.Time) {
-	o.mu.Lock()
-	st, cmds, err := scheduler.Step(o.schedulerState, scheduler.InputTick{Now: now})
-	if err != nil {
-		o.mu.Unlock()
-		o.logger.Error("scheduler tick error", "error", err)
-		return
-	}
-	o.schedulerState = st
-	o.mu.Unlock()
-
-	if len(cmds) > 0 {
-		go o.executeSchedulerCommands(ctx, cmds)
+	if err := o.schedulerTransition(ctx, scheduler.InputTick{Now: now}); err != nil {
+		o.logger.Error("scheduler transition", "error", err)
 	}
 }
 
-func (o *Orchestrator) executeSchedulerCommands(ctx context.Context, cmds []scheduler.Command) {
-	for _, c := range cmds {
-		switch cmd := c.(type) {
-		case scheduler.CmdStartScheduledAgent:
-			tmpl, err := o.store.GetTemplate(ctx, cmd.TemplateID)
-			if err != nil {
-				o.logger.Error("failed to load template for schedule", "schedule", cmd.ScheduleID, "template", cmd.TemplateID, "error", err)
-				continue
+// A schedule reservation, queued agent and runnable spec commit together.
+func (o *Orchestrator) schedulerTransition(ctx context.Context, in scheduler.Input) error {
+	o.ensureWorker(context.Background())
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	sc, commands, err := scheduler.Step(o.schedulerState, in)
+	if err != nil {
+		return err
+	}
+	m := o.mgrState
+	var effects []agent.Command
+	for _, cmd := range commands {
+		start, ok := cmd.(scheduler.CmdStartScheduledAgent)
+		if !ok {
+			continue
+		}
+		tmpl, e := o.store.GetTemplate(ctx, start.TemplateID)
+		if e != nil {
+			return e
+		}
+		var opts struct {
+			Model      string `json:"model"`
+			Runtime    string `json:"runtime"`
+			Mode       string `json:"mode"`
+			BaseBranch string `json:"base_branch"`
+		}
+		if tmpl.SettingsJSON != "" {
+			if e = json.Unmarshal([]byte(tmpl.SettingsJSON), &opts); e != nil {
+				return e
 			}
-			created, err := o.SubmitAgent(ctx, cmd.RepoID, tmpl.Harness, "", "task", tmpl.Prompt, "", "")
-			if err != nil {
-				o.logger.Error("failed to start scheduled agent", "schedule", cmd.ScheduleID, "error", err)
-				continue
-			}
-			o.mu.Lock()
-			if o.scheduledRuns == nil {
-				o.scheduledRuns = make(map[string]string)
-			}
-			o.scheduledRuns[created.ID] = cmd.ScheduleID
-			o.schedulerState, _, _ = scheduler.Step(o.schedulerState, scheduler.InputAgentStarted{
-				ScheduleID: cmd.ScheduleID,
-				AgentID:    created.ID,
-			})
-			o.mu.Unlock()
-			o.logger.Info("Started scheduled agent", "schedule", cmd.ScheduleID, "agent", created.ID, "template", tmpl.Name)
-
-		case scheduler.CmdUpdateScheduleTimes:
-			_ = o.store.UpdateScheduleNextRun(ctx, cmd.ScheduleID, cmd.LastRunAt, cmd.NextRunAt)
+		}
+		if opts.Mode == "" {
+			opts.Mode = "task"
+		}
+		spec, e := o.prepareSpec(ctx, start.RepoID, tmpl.Harness, opts.Model, opts.Mode, tmpl.Prompt, "", opts.BaseBranch, opts.Runtime)
+		if e != nil {
+			return e
+		}
+		var cs []agent.Command
+		m, cs, e = agent.Step(m, agent.InputSubmitAgent{Now: start.TriggeredAt, Spec: spec})
+		if e != nil {
+			return e
+		}
+		effects = append(effects, cs...)
+		sc, _, e = scheduler.Step(sc, scheduler.InputAgentStarted{ScheduleID: start.ScheduleID, AgentID: spec.ID})
+		if e != nil {
+			return e
 		}
 	}
+	return o.commitLocked(ctx, m, sc, effects)
 }
-
 func (o *Orchestrator) StartSchedulerLoop(ctx context.Context, interval time.Duration) {
-	_ = o.ReloadSchedules(ctx)
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	if err := o.ReloadSchedules(ctx); err != nil {
+		o.logger.Error("reload schedules", "error", err)
+		return
+	}
 	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
@@ -116,8 +102,8 @@ func (o *Orchestrator) StartSchedulerLoop(ctx context.Context, interval time.Dur
 			select {
 			case <-ctx.Done():
 				return
-			case t := <-ticker.C:
-				o.TickScheduler(ctx, t)
+			case now := <-ticker.C:
+				o.TickScheduler(ctx, now)
 			}
 		}
 	}()

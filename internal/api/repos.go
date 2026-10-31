@@ -154,7 +154,7 @@ func (h *ReposHandler) HandleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token, _ := h.decryptor.DecryptSecret(r.Context(), "github_token")
-	if err := h.gitSvc.Fetch(r.Context(), rp.Path, token); err != nil {
+	if err := h.gitSvc.Fetch(r.Context(), rp.Path, token, rp.RemoteURL); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -170,7 +170,7 @@ func (h *ReposHandler) HandlePull(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token, _ := h.decryptor.DecryptSecret(r.Context(), "github_token")
-	if err := h.gitSvc.Pull(r.Context(), rp.Path, token); err != nil {
+	if err := h.gitSvc.Pull(r.Context(), rp.Path, token, rp.RemoteURL); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

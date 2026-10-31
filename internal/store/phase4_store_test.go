@@ -18,7 +18,7 @@ func TestTemplatesAndSchedulesStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// 1. Create repo for schedule foreign key
 	repo := store.Repo{

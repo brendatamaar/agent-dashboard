@@ -25,7 +25,7 @@ func TestClaudeAdapterCommands(t *testing.T) {
 	}
 	startCmd := adapter.StartCommand(specTask)
 	expectedStart := []string{"claude", "-p", "--output-format=stream-json", "--verbose", "--model", "claude-sonnet-5-5", "write tests"}
-	if len(startCmd) != len(expectedStart) {
+	if len(startCmd) != len(expectedStart)+2 {
 		t.Fatalf("expected len %d, got %d (%v)", len(expectedStart), len(startCmd), startCmd)
 	}
 	for i, arg := range expectedStart {
@@ -37,7 +37,7 @@ func TestClaudeAdapterCommands(t *testing.T) {
 	// Resume task command
 	resumeCmd := adapter.ResumeCommand(specTask, "session-xyz")
 	expectedResume := []string{"claude", "-p", "--output-format=stream-json", "--verbose", "--resume", "session-xyz", "--model", "claude-sonnet-5-5", "write tests"}
-	if len(resumeCmd) != len(expectedResume) {
+	if len(resumeCmd) != len(expectedResume)+2 {
 		t.Fatalf("expected resume len %d, got %d (%v)", len(expectedResume), len(resumeCmd), resumeCmd)
 	}
 
@@ -46,7 +46,7 @@ func TestClaudeAdapterCommands(t *testing.T) {
 		Mode: "interactive",
 	}
 	interactiveCmd := adapter.StartCommand(specInteractive)
-	if len(interactiveCmd) != 1 || interactiveCmd[0] != "claude" {
+	if len(interactiveCmd) != 3 || interactiveCmd[0] != "claude" || interactiveCmd[1] != "--settings" {
 		t.Fatalf("unexpected interactive command: %v", interactiveCmd)
 	}
 
@@ -66,7 +66,7 @@ func TestClaudeParseEventsFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open fixture file: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	ctx := context.Background()
 	evCh, errCh := adapter.ParseEvents(ctx, f)

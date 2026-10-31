@@ -2,17 +2,25 @@ package host
 
 import (
 	"agent-dashboard/internal/runtime"
+	"os"
+	"path/filepath"
 )
 
 type HostRuntime struct {
 	// Options can include custom tmux binary path if needed
 	tmuxBinary string
+	logDir     string
 }
 
 func NewHostRuntime() *HostRuntime {
-	return &HostRuntime{
-		tmuxBinary: "tmux",
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
 	}
+	return NewHostRuntimeWithLogDir(filepath.Join(dir, "agent-dashboard", "runtime"))
+}
+func NewHostRuntimeWithLogDir(dir string) *HostRuntime {
+	return &HostRuntime{tmuxBinary: "tmux", logDir: dir}
 }
 
 func (h *HostRuntime) Name() string {

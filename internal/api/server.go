@@ -1,8 +1,11 @@
 package api
 
 import (
+	"agent-dashboard/internal/shell/crypto"
+	shelllogger "agent-dashboard/internal/shell/logger"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -27,9 +30,17 @@ type Server struct {
 	httpServer *http.Server
 	mux        *http.ServeMux
 	webFS      fs.FS
+	ws         *WSHandler
 }
 
 func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*Server, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if _, ok := logger.Handler().(*shelllogger.ScrubbingHandler); !ok {
+		logger = slog.New(shelllogger.NewScrubbingHandler(logger.Handler(), cfg.MasterPassphrase))
+	}
+	s.SetAuditRedactor(func(value string) string { return shelllogger.Scrub(logger, value) })
 	mux := http.NewServeMux()
 	limiter := NewRateLimiterMiddleware(auth.DefaultRateLimiterConfig())
 
@@ -38,22 +49,27 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 		return nil, err
 	}
 
-	secretsHandler := NewSecretsHandler(s, cfg.MasterPassphrase)
+	vault, err := crypto.NewVault(s, cfg.MasterPassphrase, logger)
+	if err != nil {
+		return nil, fmt.Errorf("initialize secret vault: %w", err)
+	}
+	secretsHandler := &SecretsHandler{store: s, vault: vault}
 	auditHandler := NewAuditHandler(s)
 
 	// Shell & Orchestration wiring
 	workspaceDir := filepath.Join(cfg.DataDir, "workspace")
 	gitSvc := git.NewService(workspaceDir)
-	hostRt := host.NewHostRuntime()
+	hostRt := host.NewHostRuntimeWithLogDir(filepath.Join(cfg.DataDir, "runtime"))
 	dockerRt := docker.NewDockerRuntime()
 	orch := orchestrator.NewOrchestrator(s, gitSvc, dockerRt, secretsHandler, logger, 1)
 	orch.RegisterRuntime("docker", dockerRt)
 	orch.RegisterRuntime("host", hostRt)
+	orch.SetHookURL(strings.TrimRight(cfg.RPOrigin, "/") + "/api/internal/hooks/approval")
 
 	telemetryHandler := NewTelemetryHandler(cfg.DataDir, orch)
 
 	// Push Notifier wiring
-	pushNotifier, err := notifier.NewNotifier(s, logger)
+	pushNotifier, err := notifier.NewNotifier(s, logger, vault)
 	if err != nil {
 		logger.Warn("Failed to initialize push notifier", "error", err)
 	} else {
@@ -62,7 +78,7 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 
 	reposHandler := NewReposHandler(s, gitSvc, secretsHandler)
 	agentsHandler := NewAgentsHandler(s, orch)
-	wsHandler := NewWSHandler(s, orch)
+	wsHandler := NewWSHandler(s, orch, cfg.RPOrigin)
 	approvalsHandler := NewApprovalsHandler(s, orch)
 	pushHandler := NewPushHandler(s, pushNotifier)
 	gitHandler := NewGitHandler(s, gitSvc, orch, secretsHandler)
@@ -116,6 +132,8 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 	mux.HandleFunc("POST /api/agents", RequireAuth(s, agentsHandler.HandleCreate))
 	mux.HandleFunc("GET /api/agents/{id}", RequireAuth(s, agentsHandler.HandleGet))
 	mux.HandleFunc("POST /api/agents/{id}/message", RequireAuth(s, agentsHandler.HandleSendMessage))
+	mux.HandleFunc("POST /api/agents/{id}/resume", RequireAuth(s, agentsHandler.HandleResume))
+	mux.HandleFunc("POST /api/agents/{id}/interrupt", RequireAuth(s, agentsHandler.HandleInterrupt))
 	mux.HandleFunc("POST /api/agents/{id}/stop", RequireAuth(s, agentsHandler.HandleStop))
 	mux.HandleFunc("POST /api/agents/{id}/cancel", RequireAuth(s, agentsHandler.HandleCancel))
 	mux.HandleFunc("DELETE /api/agents/{id}", RequireAuth(s, agentsHandler.HandleDelete))
@@ -216,6 +234,7 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 
 	// Middleware chain: Recovery -> SecurityHeaders -> CSRFProtection -> Handler
 	var handler http.Handler = mux
+	handler = BodyLimitMiddleware(handler)
 	handler = CSRFProtectionMiddleware(handler)
 	handler = SecurityHeadersMiddleware(handler)
 	handler = RecoveryMiddleware(logger, handler)
@@ -225,6 +244,7 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		ReadTimeout:       30 * time.Second,
 	}
 
 	return &Server{
@@ -235,6 +255,7 @@ func NewServer(cfg Config, s *store.Store, logger *slog.Logger, webFS fs.FS) (*S
 		httpServer: httpServer,
 		mux:        mux,
 		webFS:      webFS,
+		ws:         wsHandler,
 	}, nil
 }
 
@@ -248,12 +269,31 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) Start(ctx context.Context) error {
 	if err := s.orch.Start(ctx); err != nil {
-		s.logger.Error("failed to start orchestrator", "error", err)
+		return fmt.Errorf("start orchestrator: %w", err)
 	}
 	s.orch.StartSchedulerLoop(ctx, 1*time.Minute)
 
+	done := make(chan struct{})
+	shutdownDone := make(chan struct{})
+	defer close(done)
+	go func() {
+		defer close(shutdownDone)
+		select {
+		case <-ctx.Done():
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := s.Shutdown(shutdownCtx); err != nil {
+				s.logger.Error("HTTP shutdown failed", "error", err)
+				_ = s.httpServer.Close()
+			}
+		case <-done:
+		}
+	}()
 	s.logger.Info("Starting HTTP server", "addr", s.cfg.BindAddr)
 	err := s.httpServer.ListenAndServe()
+	if ctx.Err() != nil {
+		<-shutdownDone
+	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -261,8 +301,16 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.httpServer != nil {
-		return s.httpServer.Shutdown(ctx)
+	if s.ws != nil {
+		s.ws.Close()
 	}
-	return nil
+	var httpErr error
+	if s.httpServer != nil {
+		httpErr = s.httpServer.Shutdown(ctx)
+	}
+	var orchErr error
+	if s.orch != nil {
+		orchErr = s.orch.Shutdown(ctx)
+	}
+	return errors.Join(httpErr, orchErr)
 }

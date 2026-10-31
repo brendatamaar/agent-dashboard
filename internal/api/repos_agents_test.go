@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-dashboard/internal/api"
+	"agent-dashboard/internal/runtime"
 	"agent-dashboard/internal/shell/crypto"
 	"agent-dashboard/internal/store"
 )
@@ -68,7 +69,7 @@ func TestReposAndAgentsAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store failed: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	sessionToken := createTestUserAndSession(t, s)
 
@@ -84,6 +85,9 @@ func TestReposAndAgentsAPI(t *testing.T) {
 		t.Fatalf("new server failed: %v", err)
 	}
 
+	server.Orchestrator().RegisterRuntime("docker", runtime.NewFakeRuntime())
+	server.Orchestrator().RegisterRuntime("host", runtime.NewFakeRuntime())
+	defer func() { _ = server.Shutdown(context.Background()) }()
 	handler := server.Handler()
 
 	// Helper to send authenticated request
@@ -140,11 +144,13 @@ func TestReposAndAgentsAPI(t *testing.T) {
 
 	// 3. POST /api/agents (start agent)
 	startAgentReq := map[string]string{
-		"repo_id": "test-repo-1",
-		"harness": "claude",
-		"model":   "claude-sonnet-5-5",
-		"mode":    "task",
-		"prompt":  "Add tests",
+		"repo_id":     "test-repo-1",
+		"harness":     "claude",
+		"model":       "claude-sonnet-5-5",
+		"mode":        "task",
+		"prompt":      "Add tests",
+		"base_branch": "main",
+		"branch":      "feature/api-order",
 	}
 	rec = doReq(http.MethodPost, "/api/agents", startAgentReq)
 	if rec.Code != http.StatusCreated {
@@ -153,6 +159,12 @@ func TestReposAndAgentsAPI(t *testing.T) {
 	var createdAgent store.AgentRecord
 	if err := json.Unmarshal(rec.Body.Bytes(), &createdAgent); err != nil {
 		t.Fatalf("unmarshal created agent failed: %v", err)
+	}
+	if createdAgent.Branch != "feature/api-order" {
+		t.Fatalf("base/custom branch arguments reversed: %s", createdAgent.Branch)
+	}
+	if current, ok := server.Orchestrator().GetAgent(createdAgent.ID); !ok || current.BaseBranch != "main" {
+		t.Fatal("base branch not retained")
 	}
 	if createdAgent.ID == "" {
 		t.Fatalf("expected created agent to have ID")
@@ -199,5 +211,50 @@ func TestReposAndAgentsAPI(t *testing.T) {
 	rec = doReq(http.MethodDelete, "/api/agents/"+createdAgent.ID, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for delete, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMalformedStageAndPushUseActualHead(t *testing.T) {
+	srv, st := setupTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	token := createTestUserAndSession(t, st)
+	path := setupTestGitRepo(t)
+	rp := &store.Repo{ID: "head-repo", Name: "head-repo", Path: path, RemoteURL: "https://github.com/example/test.git", DefaultBranch: "main"}
+	if err := st.CreateRepo(ctx, rp); err != nil {
+		t.Fatal(err)
+	}
+	record := &store.AgentRecord{ID: "stale-branch-agent", RepoID: rp.ID, Harness: "claude", Runtime: "docker", Mode: "task", Branch: "agent/previous-head", WorktreePath: path, State: "stopped"}
+	if err := st.CreateAgent(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orchestrator().Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	do := func(endpoint, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/api/agents/"+record.ID+"/git/"+endpoint, bytes.NewBufferString(body))
+		r.Header.Set("X-Requested-With", "XMLHttpRequest")
+		r.AddCookie(&http.Cookie{Name: "agentd_session", Value: token})
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if err := os.WriteFile(filepath.Join(path, "unstaged.txt"), []byte("keep unstaged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, endpoint := range []string{"stage", "unstage"} {
+		res := do(endpoint, "{invalid")
+		if res.Code != 400 {
+			t.Fatalf("malformed %s JSON got %d", endpoint, res.Code)
+		}
+	}
+	check := exec.Command("git", "diff", "--cached", "--quiet")
+	check.Dir = path
+	if err := check.Run(); err != nil {
+		t.Fatal("malformed staging request staged unrelated files")
+	}
+	res := do("push", `{"force":false,"confirm_main":false}`)
+	if res.Code != 400 || !bytes.Contains(res.Body.Bytes(), []byte("protected")) {
+		t.Fatalf("push trusted stored stale branch instead of actual HEAD: %d %s", res.Code, res.Body.String())
 	}
 }
