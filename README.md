@@ -9,7 +9,7 @@
 - **Functional Core / Imperative Shell:** Stateful domain logic (rate limiter, secret scrubbing, bind validation, agent lifecycle) is pure Go with zero IO or external side effects, making it deterministic and unit/property testable. All IO (SQLite, network, tmux, Docker) lives strictly in the imperative shell.
 - **Strict Bind Policy:** The dashboard refuses to start on `0.0.0.0` or public interfaces unless explicitly passed `--insecure-allow-public-bind`. It binds only to loopback (`127.0.0.1`) or the Tailscale interface (`100.64.0.0/10`).
 - **Authentication:** FIDO2 / WebAuthn Passkeys primary with password + TOTP fallback, rate-limited login, CSRF protection, and short-lived HTTP-only sessions.
-- **Encrypted Secrets:** Stored tokens (GitHub fine-grained token, Anthropic API key, etc.) are encrypted at rest with authenticated AES-256-GCM and Argon2id key derivation. Plaintext tokens are automatically scrubbed from structured logs and transcripts.
+- **Encrypted Secrets:** Stored tokens (GitHub fine-grained token, Anthropic API key, etc.) are encrypted at rest with authenticated AES-256-GCM and Argon2id key derivation. Known tokens and registered per-run credentials are scrubbed before structured logs and transcript storage.
 - **Single Process:** Single Go binary with embedded React + TypeScript PWA (`go:embed`), running under systemd as a dedicated non-root user `agentd`.
 
 ---
@@ -88,7 +88,8 @@ Edit `/etc/agent-dashboard/agent-dashboard.env`:
 AGENTD_BIND=127.0.0.1:8080
 AGENTD_DATA_DIR=/var/lib/agent-dashboard
 AGENTD_LOG_LEVEL=info
-AGENTD_MASTER_PASSPHRASE="your-strong-passphrase"
+# Only needed to unlock older explicitly passphrase-encrypted records:
+# AGENTD_MASTER_PASSPHRASE="your-original-passphrase"
 AGENTD_RP_ID=your-node.ts.net
 AGENTD_RP_ORIGIN=https://your-node.ts.net
 ```
@@ -158,3 +159,71 @@ make verify
    ```bash
    ss -tlnp
    ```
+
+
+## Audit remediation (2026-10-30)
+
+The canonical implementation plan is `PLAN.md`; `docs/PLAN.md` links to it. Local
+verification does not accept the phone/VPS phase gates. The implementation and
+regression map is in `docs/design/audit-remediation.md`, with decisions in ADRs
+0008–0011. Proposed product additions remain backlog work.
+
+### Upgrade and backup
+
+New secrets, notification credentials, and VAPID private keys use an independent
+random key at `<database path>.key` (normally
+`/var/lib/agent-dashboard/agent-dashboard.db.key`). The service owns this file;
+Unix permissions must be `0600`. Back up the database with SQLite's backup API
+or CLI `.backup`, and back up this key separately with restricted access. A
+restore needs both. Missing or malformed keys never reset existing encrypted
+records. The key file alone does not include the database, and a database copy
+alone cannot decrypt new secrets.
+
+Older secrets encrypted with an explicitly configured master passphrase migrate
+on their first successful read when `AGENTD_MASTER_PASSPHRASE` supplies that same
+passphrase. Legacy records derived from a stored password hash cannot safely
+unlock automatically; re-enter those values in Settings. Failed migration keeps
+the original record. Older plaintext notification settings and VAPID keys migrate
+without rotating their identities.
+
+Dashboard-managed agents use independent Git checkouts with self-contained
+metadata, rather than a linked `.git` pointer into another host directory. This
+keeps Git usable inside the sandbox without mounting shared repository metadata
+or credentials. Existing checkout paths are never implicitly overwritten during
+provisioning. See ADR 0010 for cleanup and compatibility details.
+
+### Development prerequisites and checks
+
+Use Go **1.27.3+** with race-detector support (a C compiler is needed for `go test -race`),
+Node.js **22.12+**, npm, and make. Linux host sessions also require git, tmux, and
+Python 3; the sandbox image contains its own supervisor and toolchain. Bind to a
+literal loopback or Tailscale IP. DNS names are not trusted as bind-interface
+proof; use loopback plus Tailscale Serve for HTTPS/passkeys/PWA.
+
+`make verify` runs Go vet, frontend ESLint/type checks, the functional purity
+scan, Go race tests, frontend behavior tests, and the embedded production build.
+Frontend dependencies are installed from the lockfile. Runtime integration tests
+are explicitly gated; see the runtime contract tests/ADR for their environment
+switches. A skipped Linux runtime test is not evidence that tmux, Docker,
+firewall isolation, or systemd restart behavior passed.
+
+### Manual phone/VPS acceptance
+
+1. At 380 px width, open the start form and confirm Docker is the default unless
+   the selected repo opts into host mode. Open Git Review and Terminal; check
+   modal placement, scrolling, and the terminal extra keys.
+2. Start two tasks with the same prompt and confirm distinct checkout paths and
+   preserved uncommitted changes. Verify the live transcript, failure result,
+   and queued task progression.
+3. Background the phone, create more output, then return. Disconnect/reconnect
+   Tailscale. Confirm the transcript catches up without duplicates and a push
+   notification opens the correct agent.
+4. Exercise Approve/Deny with the configured authenticated harness hook; verify
+   cross-agent decisions are refused. Check the raw terminal fallback for CLI
+   modes whose hook/event integration is unavailable.
+5. Restart the dashboard service with an active host session and a Docker
+   session. Confirm both survive and output/monitoring reattach. Run a recurring
+   schedule twice and confirm it becomes eligible again after completion.
+6. Check encrypted backups, protected-branch confirmation, and `ss -tlnp`; do not
+   expose the dashboard publicly. Verify container network policy against the
+   other services on the actual VPS.
