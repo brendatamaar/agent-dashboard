@@ -152,6 +152,7 @@ type CmdSendInput struct {
 func (CmdSendInput) isCommand() {}
 
 type CmdKillSession struct {
+	Runtime     string
 	AgentID     string
 	TmuxSession string
 }
@@ -187,6 +188,7 @@ type CmdPersistEvent struct {
 func (CmdPersistEvent) isCommand() {}
 
 type CmdNotifyUser struct {
+	Urgent    bool
 	Title     string
 	Body      string
 	TargetURL string
@@ -220,3 +222,28 @@ type CmdAuditLog struct {
 }
 
 func (CmdAuditLog) isCommand() {}
+
+type InputSessionStopped struct {
+	Now     time.Time
+	AgentID string
+}
+
+func (InputSessionStopped) isInput() {}
+
+type InputResumeRequested struct {
+	Now                  time.Time
+	AgentID, TmuxSession string
+}
+
+func (InputResumeRequested) isInput() {}
+
+type InputInterruptRequested struct {
+	Now     time.Time
+	AgentID string
+}
+
+func (InputInterruptRequested) isInput() {}
+
+type CmdInterruptSession struct{ AgentID, TmuxSession, Runtime string }
+
+func (CmdInterruptSession) isCommand() {}

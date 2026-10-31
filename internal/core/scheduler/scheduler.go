@@ -3,6 +3,7 @@ package scheduler
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -133,7 +134,19 @@ func Step(st State, in Input) (State, []Command, error) {
 
 	case InputTick:
 		now := input.Now
-		for id, sc := range nextSt.Schedules {
+		ids := make([]string, 0, len(nextSt.Schedules))
+		for id := range nextSt.Schedules {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool {
+			a, b := nextSt.Schedules[ids[i]].NextRunAt, nextSt.Schedules[ids[j]].NextRunAt
+			if a != nil && b != nil && !a.Equal(*b) {
+				return a.Before(*b)
+			}
+			return ids[i] < ids[j]
+		})
+		for _, id := range ids {
+			sc := nextSt.Schedules[id]
 			if !sc.Enabled {
 				continue
 			}
@@ -150,6 +163,7 @@ func Step(st State, in Input) (State, []Command, error) {
 					continue
 				}
 
+				nextSt.ActiveRuns[id] = "pending"
 				runAt := now
 				sc.LastRunAt = &runAt
 				sc.NextRunAt = &nextRun
@@ -170,10 +184,14 @@ func Step(st State, in Input) (State, []Command, error) {
 		}
 
 	case InputTriggerManual:
+		if _, active := nextSt.ActiveRuns[input.ScheduleID]; active {
+			return st, nil, fmt.Errorf("schedule already has an active run")
+		}
 		sc, ok := nextSt.Schedules[input.ScheduleID]
 		if !ok {
 			return st, nil, fmt.Errorf("%w: %s", ErrScheduleNotFound, input.ScheduleID)
 		}
+		nextSt.ActiveRuns[sc.ID] = "pending"
 		runAt := input.Now
 		sc.LastRunAt = &runAt
 		if sc.Cron != "" {
@@ -224,9 +242,15 @@ func Step(st State, in Input) (State, []Command, error) {
 		})
 
 	case InputAgentStarted:
+		if current, exists := nextSt.ActiveRuns[input.ScheduleID]; exists && current != "pending" && current != input.AgentID {
+			return st, nil, nil
+		}
 		nextSt.ActiveRuns[input.ScheduleID] = input.AgentID
 
 	case InputAgentFinished:
+		if nextSt.ActiveRuns[input.ScheduleID] != input.AgentID {
+			return st, nil, nil
+		}
 		delete(nextSt.ActiveRuns, input.ScheduleID)
 		if sc, ok := nextSt.Schedules[input.ScheduleID]; ok && input.NextRun != nil {
 			sc.NextRunAt = input.NextRun

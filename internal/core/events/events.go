@@ -20,6 +20,7 @@ const (
 )
 
 type NormalizedEvent struct {
+	AgentID   string         `json:"agent_id,omitempty"`
 	Seq       int64          `json:"seq"`
 	Type      EventType      `json:"type"`
 	Timestamp time.Time      `json:"timestamp"`

@@ -60,7 +60,7 @@ func TestAgentLifecycleTransitions(t *testing.T) {
 
 	// 3. Approval needed event -> StateAwaitingApproval
 	appEv := events.NewApprovalNeededEvent(1, now, "app-1", "npm install", "package.json", nil)
-	manager, cmds, err = Step(manager, InputHarnessEvent{Now: now, AgentID: "agent-1", Event: appEv})
+	manager, _, err = Step(manager, InputHarnessEvent{Now: now, AgentID: "agent-1", Event: appEv})
 	if err != nil {
 		t.Fatalf("harness event failed: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestAgentLifecycleTransitions(t *testing.T) {
 	}
 
 	// 4. Approval decision -> StateRunning
-	manager, cmds, err = Step(manager, InputApprovalDecision{Now: now, AgentID: "agent-1", ApprovalID: "app-1", Approved: true})
+	manager, _, err = Step(manager, InputApprovalDecision{Now: now, AgentID: "agent-1", ApprovalID: "app-1", Approved: true})
 	if err != nil {
 		t.Fatalf("approval decision failed: %v", err)
 	}
@@ -79,13 +79,14 @@ func TestAgentLifecycleTransitions(t *testing.T) {
 
 	// 5. Done event -> StateDone
 	doneEv := events.NewDoneEvent(2, now, "Complete", "completed")
-	manager, cmds, err = Step(manager, InputHarnessEvent{Now: now, AgentID: "agent-1", Event: doneEv})
+	manager, _, err = Step(manager, InputHarnessEvent{Now: now, AgentID: "agent-1", Event: doneEv})
 	if err != nil {
 		t.Fatalf("done event failed: %v", err)
 	}
 	if a := manager.Agents["agent-1"]; a.State != StateDone {
 		t.Fatalf("expected StateDone, got %s", a.State)
 	}
+	manager, _, _ = Step(manager, InputSessionStopped{Now: now, AgentID: "agent-1"})
 	if manager.ActiveCount() != 0 {
 		t.Fatalf("expected 0 active agents, got %d", manager.ActiveCount())
 	}
