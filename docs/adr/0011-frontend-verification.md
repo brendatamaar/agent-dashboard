@@ -9,8 +9,9 @@ its esbuild dependency also had reported development-server vulnerabilities.
 Use Vite 8 and its matching React plugin, Tailwind 4's Vite plugin to compile the
 existing utility classes, ESLint with TypeScript/rules-of-hooks, and Vitest with
 Testing Library/jsdom for sequence-model and reconnect behavior tests. These are
-build/test dependencies; none run in the VPS dashboard process. Node 22.12 or
-newer is required for development and verification. The lockfile pins resolution,
+build/test dependencies; none run in the VPS dashboard process. Node 22.22.2+ on
+22.x, 24.15+ on 24.x, or 26+ is required by the locked test dependencies.
+The lockfile pins resolution,
 and Makefile uses npm ci when dependencies need syncing.
 
 The terminal and Git-review views load on demand. The event view retains at most
@@ -37,3 +38,9 @@ The final 2026-10-31 npm audit identified GHSA-g3hv-75wg-m249 in minimatch
 the upstream fix while retaining the current lint tools; lint, tests and build
 must pass with this resolution. Revisit the override when those tools adopt the
 patched major version. Advisory: https://github.com/advisories/GHSA-g3hv-75wg-m249.
+
+The self-hosted CI runner initially inherited Node 18.19.1 and failed to start
+Vitest because Rolldown imports node:util.styleText. CI now selects Node 22.22.3
+from the shared .nvmrc using actions/setup-node before running make verify.
+This also corrects the previously understated package engine requirement to match
+jsdom and its locked dependencies. It does not change the deployed Go runtime.

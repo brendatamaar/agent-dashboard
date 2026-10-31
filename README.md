@@ -195,7 +195,10 @@ provisioning. See ADR 0010 for cleanup and compatibility details.
 ### Development prerequisites and checks
 
 Use Go **1.27.3+** with race-detector support (a C compiler is needed for `go test -race`),
-Node.js **22.12+**, npm, and make. Linux host sessions also require git, tmux, and
+Node.js **22.22.2+ on 22.x, 24.15+ on 24.x, or 26+**, npm, and make.
+Use `nvm install` / `nvm use` to select the version pinned in `.nvmrc`; CI uses
+that same file through `actions/setup-node` before verification.
+Linux host sessions also require git, tmux, and
 Python 3; the sandbox image contains its own supervisor and toolchain. Bind to a
 literal loopback or Tailscale IP. DNS names are not trusted as bind-interface
 proof; use loopback plus Tailscale Serve for HTTPS/passkeys/PWA.
