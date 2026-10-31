@@ -2,7 +2,6 @@ package repo
 
 import (
 	"fmt"
-	"net/url"
 	"regexp"
 	"strings"
 )
@@ -10,7 +9,6 @@ import (
 var (
 	repoNameRegex   = regexp.MustCompile(`^[a-zA-Z0-9_\-\.]+$`)
 	branchSafeRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-\.\/]+$`)
-	slugSafeRegex   = regexp.MustCompile(`^[a-z0-9\-]+$`)
 )
 
 // ValidateRepoName checks that a local repository name is safe for paths and identifiers.
@@ -41,34 +39,25 @@ func ParseAndValidateGitHubURL(rawURL string) (owner, repo string, err error) {
 		return "", "", fmt.Errorf("remote URL cannot be empty")
 	}
 
-	// Handle HTTPS: https://github.com/owner/repo[.git]
-	if strings.HasPrefix(rawURL, "https://") || strings.HasPrefix(rawURL, "http://") {
-		u, err := url.Parse(rawURL)
-		if err != nil {
-			return "", "", fmt.Errorf("invalid URL: %w", err)
-		}
-		if !strings.EqualFold(u.Host, "github.com") {
-			return "", "", fmt.Errorf("only github.com URLs are currently supported, got host %q", u.Host)
-		}
-		path := strings.Trim(u.Path, "/")
-		parts := strings.Split(path, "/")
-		if len(parts) != 2 {
-			return "", "", fmt.Errorf("invalid GitHub repository path %q (expected owner/repo)", u.Path)
-		}
-		owner = parts[0]
-		repo = strings.TrimSuffix(parts[1], ".git")
-	} else if strings.HasPrefix(rawURL, "git@github.com:") {
-		// Handle SSH: git@github.com:owner/repo[.git]
-		path := strings.TrimPrefix(rawURL, "git@github.com:")
-		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) != 2 {
-			return "", "", fmt.Errorf("invalid GitHub SSH path %q (expected owner/repo)", path)
-		}
-		owner = parts[0]
-		repo = strings.TrimSuffix(parts[1], ".git")
-	} else {
-		return "", "", fmt.Errorf("unsupported remote URL format (must be https://github.com/owner/repo)")
+	// Deliberately accept only the two canonical GitHub remote forms. URL
+	// escapes, credentials, query strings, fragments and ports are rejected by
+	// the repository-name grammar instead of normalized into a different remote.
+	var path string
+	switch {
+	case strings.HasPrefix(rawURL, "https://github.com/"):
+		path = strings.TrimPrefix(rawURL, "https://github.com/")
+	case strings.HasPrefix(rawURL, "git@github.com:"):
+		path = strings.TrimPrefix(rawURL, "git@github.com:")
+	default:
+		return "", "", fmt.Errorf("unsupported remote URL (expected HTTPS or SSH github.com owner/repo)")
 	}
+	path = strings.TrimSuffix(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid GitHub repository path (expected owner/repo)")
+	}
+	owner = parts[0]
+	repo = strings.TrimSuffix(parts[1], ".git")
 
 	if err := ValidateRepoName(owner); err != nil {
 		return "", "", fmt.Errorf("invalid repository owner %q: %w", owner, err)
@@ -88,6 +77,14 @@ func ValidateBranchName(branch string) error {
 	}
 	if len(branch) > 200 {
 		return fmt.Errorf("branch name too long (max 200 characters)")
+	}
+	if strings.HasPrefix(branch, "-") {
+		return fmt.Errorf("branch name cannot start with a hyphen")
+	}
+	for _, part := range strings.Split(branch, "/") {
+		if strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return fmt.Errorf("invalid branch component")
+		}
 	}
 	if strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") {
 		return fmt.Errorf("branch name cannot begin or end with a slash")

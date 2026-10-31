@@ -17,6 +17,8 @@ import (
 	"agent-dashboard/internal/harness"
 )
 
+// Adapter command flags checked against installed claude 2.1.314 --help on
+// 2026-10-30: --print, --output-format=stream-json, --verbose, --resume, --model, --allowedTools and --dangerously-skip-permissions.
 type Adapter struct {
 	binaryPath string
 }
@@ -69,10 +71,13 @@ func (a *Adapter) Check(ctx context.Context) (harness.VersionInfo, harness.AuthS
 func (a *Adapter) StartCommand(spec agent.AgentSpec) []string {
 	if spec.Mode == "interactive" {
 		cmd := []string{a.binaryPath}
+		if spec.Prompt != "" {
+			cmd = append(cmd, spec.Prompt)
+		}
 		if spec.Model != "" {
 			cmd = append(cmd, "--model", spec.Model)
 		}
-		return cmd
+		return configureCommand(cmd, spec)
 	}
 
 	// Task mode: uses claude -p with streaming JSON
@@ -84,7 +89,7 @@ func (a *Adapter) StartCommand(spec agent.AgentSpec) []string {
 	if spec.Prompt != "" {
 		cmd = append(cmd, spec.Prompt)
 	}
-	return cmd
+	return configureCommand(cmd, spec)
 }
 
 func (a *Adapter) ResumeCommand(spec agent.AgentSpec, sessionID string) []string {
@@ -93,7 +98,7 @@ func (a *Adapter) ResumeCommand(spec agent.AgentSpec, sessionID string) []string
 		if spec.Model != "" {
 			cmd = append(cmd, "--model", spec.Model)
 		}
-		return cmd
+		return configureCommand(cmd, spec)
 	}
 
 	// Task mode: resume with prompt
@@ -104,7 +109,7 @@ func (a *Adapter) ResumeCommand(spec agent.AgentSpec, sessionID string) []string
 	if spec.Prompt != "" {
 		cmd = append(cmd, spec.Prompt)
 	}
-	return cmd
+	return configureCommand(cmd, spec)
 }
 
 func (a *Adapter) Respond(approved bool) []byte {
@@ -122,6 +127,7 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 	go func() {
 		defer close(outCh)
 		defer close(errCh)
+		defer harness.CloseOnCancel(ctx, r)()
 
 		scanner := bufio.NewScanner(r)
 		// Set buffer to handle large JSON lines (e.g. diffs or file contents)
@@ -144,6 +150,10 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 
 			var raw map[string]any
 			if err := json.Unmarshal(line, &raw); err != nil {
+				select {
+				case errCh <- fmt.Errorf("unparseable harness output; use raw terminal: %w", err):
+				default:
+				}
 				continue
 			}
 
@@ -166,7 +176,9 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 							"tools":      raw["tools"],
 						},
 					}
-					outCh <- ev
+					if !harness.SendEvent(ctx, outCh, ev) {
+						return
+					}
 				}
 
 			case "assistant":
@@ -183,14 +195,18 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 						text, _ := contentMap["text"].(string)
 						if strings.TrimSpace(text) != "" {
 							currSeq := atomic.AddInt64(&seq, 1)
-							outCh <- events.NewMessageEvent(currSeq, now, "assistant", text)
+							if !harness.SendEvent(ctx, outCh, events.NewMessageEvent(currSeq, now, "assistant", text)) {
+								return
+							}
 						}
 					case "tool_use":
 						toolID, _ := contentMap["id"].(string)
 						toolName, _ := contentMap["name"].(string)
 						input := contentMap["input"]
 						currSeq := atomic.AddInt64(&seq, 1)
-						outCh <- events.NewToolCallEvent(currSeq, now, toolID, toolName, input)
+						if !harness.SendEvent(ctx, outCh, events.NewToolCallEvent(currSeq, now, toolID, toolName, input)) {
+							return
+						}
 					}
 				}
 
@@ -208,7 +224,9 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 						content := contentMap["content"]
 						isErr, _ := contentMap["is_error"].(bool)
 						currSeq := atomic.AddInt64(&seq, 1)
-						outCh <- events.NewToolResultEvent(currSeq, now, toolID, content, isErr)
+						if !harness.SendEvent(ctx, outCh, events.NewToolResultEvent(currSeq, now, toolID, content, isErr)) {
+							return
+						}
 					}
 				}
 
@@ -230,23 +248,46 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 					}
 				}
 
-				if subType == "success" || subType == "" {
+				isError, _ := raw["is_error"].(bool)
+				if !isError && (subType == "success" || subType == "") {
 					currSeq := atomic.AddInt64(&seq, 1)
-					outCh <- events.NewUsageEvent(currSeq, now, inTokens, outTokens, costUSD, "")
+					if !harness.SendEvent(ctx, outCh, events.NewUsageEvent(currSeq, now, inTokens, outTokens, costUSD, "")) {
+						return
+					}
 
 					currSeq2 := atomic.AddInt64(&seq, 1)
-					outCh <- events.NewDoneEvent(currSeq2, now, resultText, termReason)
+					if !harness.SendEvent(ctx, outCh, events.NewDoneEvent(currSeq2, now, resultText, termReason)) {
+						return
+					}
+				}
+
+				if isError || (subType != "success" && subType != "") {
+					seq++
+					if !harness.SendEvent(ctx, outCh, events.NewErrorEvent(seq, now, "Claude result: "+subType, raw)) {
+						return
+					}
 				}
 
 			case "error":
 				errMsg, _ := raw["message"].(string)
 				currSeq := atomic.AddInt64(&seq, 1)
-				outCh <- events.NewErrorEvent(currSeq, now, errMsg, raw)
+				if !harness.SendEvent(ctx, outCh, events.NewErrorEvent(currSeq, now, errMsg, raw)) {
+					return
+				}
+			default:
+				select {
+				case errCh <- fmt.Errorf("unsupported harness event; use raw terminal"):
+				default:
+				}
 			}
 		}
 
 		if err := scanner.Err(); err != nil && err != io.EOF {
-			errCh <- err
+			select {
+			case errCh <- err:
+			case <-ctx.Done():
+			default:
+			}
 		}
 	}()
 
@@ -255,3 +296,18 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 
 // Compile-time check that Adapter implements harness.Harness
 var _ harness.Harness = (*Adapter)(nil)
+
+func configureCommand(cmd []string, spec agent.AgentSpec) []string {
+	if spec.AutoApprove {
+		cmd = append(cmd, "--dangerously-skip-permissions")
+	} else {
+		// The helper lives outside the writable checkout. Missing callback credentials
+		// or an unreachable dashboard produces an explicit deny decision.
+		settings := `{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"python3 \"$AGENT_DASHBOARD_SUPERVISOR\" hook","timeout":310}]}]}}`
+		cmd = append(cmd, "--settings", settings)
+	}
+	if len(spec.AllowedTools) > 0 {
+		cmd = append(cmd, "--allowedTools", strings.Join(spec.AllowedTools, ","))
+	}
+	return cmd
+}

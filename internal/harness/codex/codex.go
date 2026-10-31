@@ -19,6 +19,8 @@ import (
 	"agent-dashboard/internal/harness"
 )
 
+// Adapter command flags checked against installed codex 0.140.0 --help on
+// 2026-10-30: exec --json, exec resume, --model and --dangerously-bypass-approvals-and-sandbox.
 type Adapter struct {
 	binaryPath string
 }
@@ -139,6 +141,7 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 	go func() {
 		defer close(outCh)
 		defer close(errCh)
+		defer harness.CloseOnCancel(ctx, r)()
 
 		scanner := bufio.NewScanner(r)
 		buf := make([]byte, 1024*1024)
@@ -160,11 +163,16 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 
 			var raw map[string]any
 			if err := json.Unmarshal(line, &raw); err != nil {
+				select {
+				case errCh <- fmt.Errorf("unparseable harness output; use raw terminal: %w", err):
+				default:
+				}
 				continue
 			}
 
 			now := time.Now().UTC()
 			evType, _ := raw["type"].(string)
+			evType = strings.ReplaceAll(evType, ".", "_")
 
 			switch evType {
 			case "thread_started", "session_init":
@@ -178,8 +186,48 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				if m, ok := raw["model"].(string); ok {
 					ev.Payload["model"] = m
 				}
-				outCh <- ev
+				if !harness.SendEvent(ctx, outCh, ev) {
+					return
+				}
 
+			case "item_started", "item_completed":
+				item, _ := raw["item"].(map[string]any)
+				kind, _ := item["type"].(string)
+				id, _ := item["id"].(string)
+				switch kind {
+				case "agent_message":
+					if evType == "item_completed" {
+						text, _ := item["text"].(string)
+						seq++
+						if !harness.SendEvent(ctx, outCh, events.NewMessageEvent(seq, now, "assistant", text)) {
+							return
+						}
+					}
+				case "command_execution":
+					seq++
+					if evType == "item_started" {
+						if !harness.SendEvent(ctx, outCh, events.NewToolCallEvent(seq, now, id, "shell", item["command"])) {
+							return
+						}
+					} else {
+						code, _ := item["exit_code"].(float64)
+						if !harness.SendEvent(ctx, outCh, events.NewToolResultEvent(seq, now, id, item["aggregated_output"], code != 0)) {
+							return
+						}
+					}
+				default:
+					select {
+					case errCh <- fmt.Errorf("unsupported Codex item; use raw terminal"):
+					default:
+					}
+				}
+			case "turn_started":
+				// Lifecycle event carries no normalized payload.
+			case "turn_failed":
+				seq++
+				if !harness.SendEvent(ctx, outCh, events.NewErrorEvent(seq, now, "Codex turn failed", raw)) {
+					return
+				}
 			case "item_added":
 				if item, ok := raw["item"].(map[string]any); ok {
 					itemType, _ := item["type"].(string)
@@ -200,7 +248,9 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 						}
 						if text != "" {
 							seq++
-							outCh <- events.NewMessageEvent(seq, now, role, text)
+							if !harness.SendEvent(ctx, outCh, events.NewMessageEvent(seq, now, role, text)) {
+								return
+							}
 						}
 
 					case "function_call", "tool_call":
@@ -208,13 +258,17 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 						name, _ := item["name"].(string)
 						args := item["arguments"]
 						seq++
-						outCh <- events.NewToolCallEvent(seq, now, callID, name, args)
+						if !harness.SendEvent(ctx, outCh, events.NewToolCallEvent(seq, now, callID, name, args)) {
+							return
+						}
 
 					case "function_call_output", "tool_result":
 						callID, _ := item["call_id"].(string)
 						out := item["output"]
 						seq++
-						outCh <- events.NewToolResultEvent(seq, now, callID, out, false)
+						if !harness.SendEvent(ctx, outCh, events.NewToolResultEvent(seq, now, callID, out, false)) {
+							return
+						}
 					}
 				}
 
@@ -223,7 +277,9 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				text, _ := raw["text"].(string)
 				if text != "" {
 					seq++
-					outCh <- events.NewMessageEvent(seq, now, role, text)
+					if !harness.SendEvent(ctx, outCh, events.NewMessageEvent(seq, now, role, text)) {
+						return
+					}
 				}
 
 			case "subagent_started":
@@ -232,14 +288,18 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				prompt, _ := raw["prompt"].(string)
 				parentID, _ := raw["parent_agent_id"].(string)
 				seq++
-				outCh <- events.NewSubagentStartedEvent(seq, now, subID, subType, prompt, parentID)
+				if !harness.SendEvent(ctx, outCh, events.NewSubagentStartedEvent(seq, now, subID, subType, prompt, parentID)) {
+					return
+				}
 
 			case "subagent_finished":
 				subID, _ := raw["subagent_id"].(string)
 				result, _ := raw["result"].(string)
 				success, _ := raw["success"].(bool)
 				seq++
-				outCh <- events.NewSubagentFinishedEvent(seq, now, subID, result, success)
+				if !harness.SendEvent(ctx, outCh, events.NewSubagentFinishedEvent(seq, now, subID, result, success)) {
+					return
+				}
 
 			case "usage":
 				var inTok, outTok int
@@ -256,23 +316,46 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 					cost = c
 				}
 				seq++
-				outCh <- events.NewUsageEvent(seq, now, inTok, outTok, cost, "")
+				if !harness.SendEvent(ctx, outCh, events.NewUsageEvent(seq, now, inTok, outTok, cost, "")) {
+					return
+				}
 
 			case "turn_completed", "done":
+				if usage, ok := raw["usage"].(map[string]any); ok {
+					input, _ := usage["input_tokens"].(float64)
+					output, _ := usage["output_tokens"].(float64)
+					seq++
+					if !harness.SendEvent(ctx, outCh, events.NewUsageEvent(seq, now, int(input), int(output), 0, "")) {
+						return
+					}
+				}
 				res, _ := raw["result"].(string)
 				seq++
-				outCh <- events.NewDoneEvent(seq, now, res, "completed")
+				if !harness.SendEvent(ctx, outCh, events.NewDoneEvent(seq, now, res, "completed")) {
+					return
+				}
 
 			case "error":
 				msg, _ := raw["message"].(string)
 				seq++
-				outCh <- events.NewErrorEvent(seq, now, msg, raw)
+				if !harness.SendEvent(ctx, outCh, events.NewErrorEvent(seq, now, msg, raw)) {
+					return
+				}
+			default:
+				select {
+				case errCh <- fmt.Errorf("unsupported harness event; use raw terminal"):
+				default:
+				}
 			}
 		}
 
 		if err := scanner.Err(); err != nil && err != io.EOF {
 			atomic.AddInt64(&seq, 1)
-			errCh <- err
+			select {
+			case errCh <- err:
+			case <-ctx.Done():
+			default:
+			}
 		}
 	}()
 

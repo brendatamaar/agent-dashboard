@@ -43,6 +43,11 @@ func TestParseAndValidateGitHubURL(t *testing.T) {
 		{"https://github.com/brendatama", "", "", true},
 		{"https://github.com/brendatama/repo/extra", "", "", true},
 		{"invalid url", "", "", true},
+		{"https://token@github.com/owner/repo", "", "", true},
+		{"http://github.com/owner/repo", "", "", true},
+		{"https://github.com/owner/repo?token=secret", "", "", true},
+		{"https://github.com/owner/repo%2fextra", "", "", true},
+		{"https://github.com:443/owner/repo", "", "", true},
 	}
 
 	for _, c := range cases {

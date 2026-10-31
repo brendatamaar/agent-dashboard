@@ -3,79 +3,35 @@
 package host
 
 import (
-	"context"
-	"fmt"
-	"io"
-	"strings"
-	"sync"
-
 	"agent-dashboard/internal/runtime"
+	"context"
+	"io"
 )
 
-var (
-	winMu       sync.RWMutex
-	winSessions = make(map[string]runtime.RuntimeSpec)
-)
-
-func (h *HostRuntime) Create(ctx context.Context, spec runtime.RuntimeSpec) (runtime.Handle, error) {
-	if spec.SessionName == "" {
-		return "", fmt.Errorf("session name is required")
-	}
-	winMu.Lock()
-	defer winMu.Unlock()
-	winSessions[spec.SessionName] = spec
-	return runtime.Handle(spec.SessionName), nil
+func (r *HostRuntime) Create(ctx context.Context, s runtime.RuntimeSpec) (runtime.Handle, error) {
+	return "", runtime.ErrUnsupported
 }
-
-func (h *HostRuntime) Exec(ctx context.Context, handle runtime.Handle, cmdArgs []string) (io.ReadCloser, error) {
-	winMu.RLock()
-	defer winMu.RUnlock()
-	if _, ok := winSessions[string(handle)]; !ok {
-		return nil, fmt.Errorf("session %q not found", handle)
-	}
-	return io.NopCloser(strings.NewReader("")), nil
+func (r *HostRuntime) Exec(ctx context.Context, h runtime.Handle, args []string) (io.ReadCloser, error) {
+	return nil, runtime.ErrUnsupported
 }
-
-func (h *HostRuntime) Attach(ctx context.Context, handle runtime.Handle) (runtime.PTY, error) {
-	winMu.RLock()
-	defer winMu.RUnlock()
-	if _, ok := winSessions[string(handle)]; !ok {
-		return nil, fmt.Errorf("session %q not found", handle)
-	}
-	return &runtime.FakePTY{Rows: 24, Cols: 80}, nil
+func (r *HostRuntime) Output(ctx context.Context, h runtime.Handle) (io.ReadCloser, error) {
+	return nil, runtime.ErrUnsupported
 }
-
-func (h *HostRuntime) Stats(ctx context.Context, handle runtime.Handle) (runtime.Usage, error) {
-	winMu.RLock()
-	defer winMu.RUnlock()
-	if _, ok := winSessions[string(handle)]; !ok {
-		return runtime.Usage{}, fmt.Errorf("session %q not found", handle)
-	}
-	return runtime.Usage{CPUPercent: 0.5, MemoryBytes: 1024 * 1024 * 32}, nil
+func (r *HostRuntime) Interrupt(ctx context.Context, h runtime.Handle) error {
+	return runtime.ErrUnsupported
 }
-
-func (h *HostRuntime) Destroy(ctx context.Context, handle runtime.Handle) error {
-	winMu.Lock()
-	defer winMu.Unlock()
-	delete(winSessions, string(handle))
-	return nil
+func (r *HostRuntime) Attach(ctx context.Context, h runtime.Handle) (runtime.PTY, error) {
+	return nil, runtime.ErrUnsupported
 }
-
-func (h *HostRuntime) ListSessions(ctx context.Context) ([]string, error) {
-	winMu.RLock()
-	defer winMu.RUnlock()
-	var list []string
-	for name := range winSessions {
-		list = append(list, name)
-	}
-	return list, nil
+func (r *HostRuntime) Stats(ctx context.Context, h runtime.Handle) (runtime.Usage, error) {
+	return runtime.Usage{}, runtime.ErrUnsupported
 }
-
-func (h *HostRuntime) Inspect(ctx context.Context, handle runtime.Handle) (runtime.ContainerInfo, error) {
-	winMu.RLock()
-	defer winMu.RUnlock()
-	if _, ok := winSessions[string(handle)]; !ok {
-		return runtime.ContainerInfo{Status: "stopped", ExitCode: 0, OOMKilled: false}, nil
-	}
-	return runtime.ContainerInfo{Status: "running", ExitCode: 0, OOMKilled: false}, nil
+func (r *HostRuntime) Inspect(ctx context.Context, h runtime.Handle) (runtime.ContainerInfo, error) {
+	return runtime.ContainerInfo{}, runtime.ErrUnsupported
+}
+func (r *HostRuntime) Destroy(ctx context.Context, h runtime.Handle) error {
+	return runtime.ErrUnsupported
+}
+func (r *HostRuntime) ListSessions(ctx context.Context) ([]string, error) {
+	return nil, runtime.ErrUnsupported
 }

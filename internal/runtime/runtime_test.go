@@ -2,9 +2,13 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	"agent-dashboard/internal/runtime"
 	"agent-dashboard/internal/runtime/docker"
@@ -21,9 +25,14 @@ func runRuntimeContractTest(t *testing.T, r runtime.Runtime) {
 	}
 
 	// 2. Create session
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s %v", out, err)
+	}
+	name := fmt.Sprintf("contract-%d", time.Now().UnixNano())
 	spec := runtime.RuntimeSpec{
-		SessionName: "test-session-1",
-		WorkDir:     os.TempDir(),
+		SessionName: name,
+		WorkDir:     dir,
 		Command:     []string{"sleep", "10"},
 	}
 	handle, err := r.Create(ctx, spec)
@@ -33,10 +42,34 @@ func runRuntimeContractTest(t *testing.T, r runtime.Runtime) {
 	defer func() {
 		_ = r.Destroy(ctx, handle)
 	}()
-	if string(handle) != "test-session-1" {
+	if string(handle) != name {
 		t.Fatalf("unexpected handle %s", handle)
 	}
 
+	if _, err := r.Create(ctx, spec); err == nil {
+		t.Fatal("duplicate session accepted")
+	}
+	reader, err := r.Output(ctx, handle)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	_ = reader.Close()
+	input := "C-c ; $(touch must-not-execute)  exact text"
+	inputResult, err := r.Exec(ctx, handle, []string{input})
+	if err != nil {
+		t.Fatalf("literal input: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, inputResult)
+	_ = inputResult.Close()
+	if observer, ok := r.(interface{ Inputs(runtime.Handle) []string }); ok {
+		got := observer.Inputs(handle)
+		if len(got) != 1 || got[0] != input {
+			t.Fatalf("input changed: %q", got)
+		}
+	}
+	if _, err := r.Inspect(ctx, runtime.Handle(name+"-missing")); !errors.Is(err, runtime.ErrNotFound) {
+		t.Fatalf("missing inspection did not return ErrNotFound: %v", err)
+	}
 	// 3. List contains session
 	sessions, err := r.ListSessions(ctx)
 	if err != nil {
@@ -77,6 +110,9 @@ func runRuntimeContractTest(t *testing.T, r runtime.Runtime) {
 		t.Logf("Warning: 0 memory bytes returned in stats")
 	}
 
+	if err := r.Interrupt(ctx, handle); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
 	// 7. Destroy
 	if err := r.Destroy(ctx, handle); err != nil {
 		t.Fatalf("Destroy error: %v", err)
@@ -97,14 +133,20 @@ func TestFakeRuntimeContract(t *testing.T) {
 }
 
 func TestHostRuntimeContract(t *testing.T) {
+	if os.Getenv("AGENTD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("Linux tmux integration requires AGENTD_RUNTIME_INTEGRATION=1")
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("skipping host runtime contract test: tmux not found")
 	}
-	h := host.NewHostRuntime()
+	h := host.NewHostRuntimeWithLogDir(t.TempDir())
 	runRuntimeContractTest(t, h)
 }
 
 func TestDockerRuntimeContract(t *testing.T) {
+	if os.Getenv("AGENTD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("Linux Docker integration requires AGENTD_RUNTIME_INTEGRATION=1")
+	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("skipping docker runtime contract test: docker binary not found")
 	}

@@ -3,7 +3,6 @@
 package host
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -42,71 +41,101 @@ func (p *ptyWrapper) Resize(rows, cols uint16) error {
 	})
 }
 
+func (h *HostRuntime) command(ctx context.Context, handle runtime.Handle, args ...string) *exec.Cmd {
+	// A service-private /tmp namespace changes across systemd restarts. Keep the
+	// socket with durable run metadata so surviving tmux sessions stay reachable.
+	all := []string{"-S", filepath.Join(h.logDir, string(handle), "tmux.sock"), "-f", os.DevNull}
+	all = append(all, args...)
+	cmd := exec.CommandContext(ctx, h.tmuxBinary, all...)
+	cmd.Env = runtime.AgentEnvironment(nil)
+	return cmd
+}
+func (h *HostRuntime) paths(handle runtime.Handle) (string, string, string) {
+	dir := filepath.Join(h.logDir, string(handle))
+	return filepath.Join(dir, "output"), filepath.Join(dir, "exit"), filepath.Join(dir, "supervisor.py")
+}
 func (h *HostRuntime) Create(ctx context.Context, spec runtime.RuntimeSpec) (runtime.Handle, error) {
-	if spec.SessionName == "" {
-		return "", fmt.Errorf("session name is required")
+	if err := runtime.ValidateSession(spec.SessionName); err != nil {
+		return "", err
 	}
-
+	if spec.AutoApprove {
+		return "", fmt.Errorf("auto approval requires Docker")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		return "", fmt.Errorf("runtime requires python3: %w", err)
+	}
+	if err := os.MkdirAll(h.logDir, 0700); err != nil {
+		return "", err
+	}
+	handle := runtime.Handle(spec.SessionName)
+	log, status, script := h.paths(handle)
+	if err := os.Mkdir(filepath.Dir(log), 0700); err != nil {
+		return "", fmt.Errorf("reserve runtime attempt: %w", err)
+	}
+	if err := os.WriteFile(script, runtime.SupervisorScript(), 0600); err != nil {
+		return "", err
+	}
+	argv := spec.Command
+	if len(argv) == 0 {
+		argv = []string{"sleep", "infinity"}
+	}
 	args := []string{"new-session", "-d", "-s", spec.SessionName}
 	if spec.WorkDir != "" {
 		args = append(args, "-c", spec.WorkDir)
 	}
-
-	// Append command if specified
-	if len(spec.Command) > 0 {
-		args = append(args, spec.Command...)
-	}
-
-	cmd := exec.CommandContext(ctx, h.tmuxBinary, args...)
-	// Ensure complete environment including ~/.local/bin and /usr/local/bin in PATH
-	envMap := make(map[string]string)
-	for _, e := range os.Environ() {
-		parts := strings.SplitN(e, "=", 2)
-		if len(parts) == 2 {
-			envMap[parts[0]] = parts[1]
-		}
-	}
-	curPath := envMap["PATH"]
-	homeDir, _ := os.UserHomeDir()
-	extraPaths := []string{"/usr/local/bin", "/usr/bin", "/bin"}
-	if homeDir != "" {
-		extraPaths = append([]string{filepath.Join(homeDir, ".local", "bin")}, extraPaths...)
-	}
-	for _, p := range extraPaths {
-		if !strings.Contains(curPath, p) {
-			curPath = p + ":" + curPath
-		}
-	}
-	envMap["PATH"] = curPath
+	args = append(args, python, script, "run", log, status, spec.SetupCommand)
+	args = append(args, argv...)
+	cmd := h.command(ctx, handle, args...)
+	settings := make(map[string]string, len(spec.Env)+2)
 	for k, v := range spec.Env {
-		envMap[k] = v
+		settings[k] = v
 	}
-	cmd.Env = make([]string, 0, len(envMap))
-	for k, v := range envMap {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	settings["AGENT_DASHBOARD_SUPERVISOR"] = script
+	settings["AGENT_DASHBOARD_RUNTIME"] = "host"
+	settings["AGENT_DASHBOARD_MODE"] = spec.Mode
+	cmd.Env = runtime.AgentEnvironment(settings)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("start tmux: %s: %w", out, err)
 	}
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("tmux new-session failed: %s: %w", stderr.String(), err)
-	}
-
-	return runtime.Handle(spec.SessionName), nil
+	return handle, nil
 }
-
-func (h *HostRuntime) Exec(ctx context.Context, handle runtime.Handle, cmdArgs []string) (io.ReadCloser, error) {
-	// For sending raw input keys to the tmux pane
-	joined := strings.Join(cmdArgs, " ")
-	cmd := exec.CommandContext(ctx, h.tmuxBinary, "send-keys", "-t", string(handle), joined, "Enter")
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("tmux send-keys failed: %w", err)
+func (h *HostRuntime) Exec(ctx context.Context, handle runtime.Handle, args []string) (io.ReadCloser, error) {
+	if err := runtime.ValidateSession(string(handle)); err != nil {
+		return nil, err
+	}
+	if len(args) != 1 {
+		return nil, fmt.Errorf("input requires exactly one literal payload")
+	}
+	if err := h.command(ctx, handle, "send-keys", "-l", "-t", string(handle), "--", strings.TrimSuffix(args[0], "\n")).Run(); err != nil {
+		return nil, err
+	}
+	if err := h.command(ctx, handle, "send-keys", "-t", string(handle), "Enter").Run(); err != nil {
+		return nil, err
 	}
 	return io.NopCloser(strings.NewReader("")), nil
 }
+func (h *HostRuntime) Interrupt(ctx context.Context, handle runtime.Handle) error {
+	if err := runtime.ValidateSession(string(handle)); err != nil {
+		return err
+	}
+	return h.command(ctx, handle, "send-keys", "-t", string(handle), "C-c").Run()
+}
+func (h *HostRuntime) Output(ctx context.Context, handle runtime.Handle) (io.ReadCloser, error) {
+	if err := runtime.ValidateSession(string(handle)); err != nil {
+		return nil, err
+	}
+	log, status, script := h.paths(handle)
+	if _, err := os.Stat(script); err != nil {
+		return nil, fmt.Errorf("%w: %s", runtime.ErrNotFound, handle)
+	}
+	cmd := exec.Command("python3", script, "follow", log, status)
+	cmd.Env = runtime.AgentEnvironment(nil)
+	return runtime.CommandReader(ctx, cmd)
+}
 
 func (h *HostRuntime) Attach(ctx context.Context, handle runtime.Handle) (runtime.PTY, error) {
-	cmd := exec.CommandContext(ctx, h.tmuxBinary, "attach-session", "-t", string(handle))
+	cmd := h.command(ctx, handle, "attach-session", "-t", string(handle))
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to attach pty to tmux session %q: %w", handle, err)
@@ -116,7 +145,7 @@ func (h *HostRuntime) Attach(ctx context.Context, handle runtime.Handle) (runtim
 
 func (h *HostRuntime) Stats(ctx context.Context, handle runtime.Handle) (runtime.Usage, error) {
 	// Get PID of pane inside tmux
-	cmd := exec.CommandContext(ctx, h.tmuxBinary, "list-panes", "-t", string(handle), "-F", "#{pane_pid}")
+	cmd := h.command(ctx, handle, "list-panes", "-t", string(handle), "-F", "#{pane_pid}")
 	out, err := cmd.Output()
 	if err != nil {
 		return runtime.Usage{}, fmt.Errorf("failed to list tmux panes: %w", err)
@@ -148,34 +177,60 @@ func (h *HostRuntime) Stats(ctx context.Context, handle runtime.Handle) (runtime
 }
 
 func (h *HostRuntime) Destroy(ctx context.Context, handle runtime.Handle) error {
-	cmd := exec.CommandContext(ctx, h.tmuxBinary, "kill-session", "-t", string(handle))
-	_ = cmd.Run() // Ignore error if already killed
-	return nil
-}
-
-func (h *HostRuntime) ListSessions(ctx context.Context) ([]string, error) {
-	cmd := exec.CommandContext(ctx, h.tmuxBinary, "list-sessions", "-F", "#{session_name}")
-	out, err := cmd.Output()
-	if err != nil {
-		// If tmux server is not running, list-sessions returns error with "no server running"
-		return nil, nil
+	if err := runtime.ValidateSession(string(handle)); err != nil {
+		return err
 	}
-
-	var sessions []string
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if l != "" {
-			sessions = append(sessions, l)
+	out, err := h.command(ctx, handle, "kill-session", "-t", string(handle)).CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		message := string(out)
+		if !strings.Contains(message, "no server running") && !strings.Contains(message, "No such file or directory") && !strings.Contains(message, "can't find session") {
+			return fmt.Errorf("kill tmux runtime: %s: %w", out, err)
 		}
 	}
-	return sessions, nil
+	// Session validation confines cleanup to this run's private directory.
+	// Dashboard shutdown never calls Destroy.
+	return os.RemoveAll(filepath.Join(h.logDir, string(handle)))
 }
-
-func (h *HostRuntime) Inspect(ctx context.Context, handle runtime.Handle) (runtime.ContainerInfo, error) {
-	cmd := exec.CommandContext(ctx, h.tmuxBinary, "has-session", "-t", string(handle))
-	if err := cmd.Run(); err != nil {
-		return runtime.ContainerInfo{Status: "stopped", ExitCode: 0, OOMKilled: false}, nil
+func (h *HostRuntime) ListSessions(ctx context.Context) ([]string, error) {
+	entries, err := os.ReadDir(h.logDir)
+	if os.IsNotExist(err) {
+		return nil, nil
 	}
-	return runtime.ContainerInfo{Status: "running", ExitCode: 0, OOMKilled: false}, nil
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := h.Inspect(ctx, runtime.Handle(entry.Name()))
+		if err == nil && info.Status == "running" {
+			names = append(names, entry.Name())
+		}
+	}
+	return names, nil
+}
+func (h *HostRuntime) Inspect(ctx context.Context, handle runtime.Handle) (runtime.ContainerInfo, error) {
+	if err := runtime.ValidateSession(string(handle)); err != nil {
+		return runtime.ContainerInfo{}, err
+	}
+	_, status, script := h.paths(handle)
+	if data, err := os.ReadFile(status); err == nil {
+		code, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			return runtime.ContainerInfo{}, fmt.Errorf("invalid recorded runtime exit: %w", err)
+		}
+		return runtime.ContainerInfo{Status: "exited", ExitCode: code}, nil
+	}
+	if _, err := os.Stat(script); os.IsNotExist(err) {
+		return runtime.ContainerInfo{}, fmt.Errorf("%w: %s", runtime.ErrNotFound, handle)
+	}
+	if err := h.command(ctx, handle, "has-session", "-t", string(handle)).Run(); err != nil {
+		return runtime.ContainerInfo{}, fmt.Errorf("runtime exit status unavailable: %w", err)
+	}
+	return runtime.ContainerInfo{Status: "running"}, nil
 }

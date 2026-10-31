@@ -137,3 +137,14 @@ func TestValidateCommit(t *testing.T) {
 		t.Errorf("expected ErrEmptyCommitMessage for empty, got: %v", err)
 	}
 }
+
+func TestDefaultPushPolicyCannotMutateGlobalGuards(t *testing.T) {
+	p := gitguard.DefaultPushPolicy()
+	p.ProtectedBranches[0] = "unprotected"
+	if !gitguard.IsProtected("main") || gitguard.ValidatePush("main", false, false) == nil {
+		t.Fatal("caller mutated protected branch security policy")
+	}
+	if gitguard.DefaultPushPolicy().ProtectedBranches[0] != "main" {
+		t.Fatal("default policy shares mutable storage")
+	}
+}

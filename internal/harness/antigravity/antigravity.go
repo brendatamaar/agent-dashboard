@@ -149,6 +149,7 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 	go func() {
 		defer close(outCh)
 		defer close(errCh)
+		defer harness.CloseOnCancel(ctx, r)()
 
 		scanner := bufio.NewScanner(r)
 		buf := make([]byte, 1024*1024)
@@ -170,6 +171,10 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 
 			var raw map[string]any
 			if err := json.Unmarshal(line, &raw); err != nil {
+				select {
+				case errCh <- fmt.Errorf("unparseable harness output; use raw terminal: %w", err):
+				default:
+				}
 				continue
 			}
 
@@ -185,7 +190,9 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				if m, ok := raw["model"].(string); ok {
 					ev.Payload["model"] = m
 				}
-				outCh <- ev
+				if !harness.SendEvent(ctx, outCh, ev) {
+					return
+				}
 
 			case "content", "message":
 				role, _ := raw["role"].(string)
@@ -195,7 +202,9 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				text, _ := raw["text"].(string)
 				if text != "" {
 					seq++
-					outCh <- events.NewMessageEvent(seq, now, role, text)
+					if !harness.SendEvent(ctx, outCh, events.NewMessageEvent(seq, now, role, text)) {
+						return
+					}
 				}
 
 			case "tool_call":
@@ -203,13 +212,17 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				name, _ := raw["name"].(string)
 				args := raw["args"]
 				seq++
-				outCh <- events.NewToolCallEvent(seq, now, callID, name, args)
+				if !harness.SendEvent(ctx, outCh, events.NewToolCallEvent(seq, now, callID, name, args)) {
+					return
+				}
 
 			case "tool_response", "tool_result":
 				callID, _ := raw["call_id"].(string)
 				out := raw["output"]
 				seq++
-				outCh <- events.NewToolResultEvent(seq, now, callID, out, false)
+				if !harness.SendEvent(ctx, outCh, events.NewToolResultEvent(seq, now, callID, out, false)) {
+					return
+				}
 
 			case "subagent_started":
 				subID, _ := raw["subagent_id"].(string)
@@ -217,14 +230,18 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 				prompt, _ := raw["prompt"].(string)
 				parentID, _ := raw["parent_agent_id"].(string)
 				seq++
-				outCh <- events.NewSubagentStartedEvent(seq, now, subID, subType, prompt, parentID)
+				if !harness.SendEvent(ctx, outCh, events.NewSubagentStartedEvent(seq, now, subID, subType, prompt, parentID)) {
+					return
+				}
 
 			case "subagent_finished":
 				subID, _ := raw["subagent_id"].(string)
 				result, _ := raw["result"].(string)
 				success, _ := raw["success"].(bool)
 				seq++
-				outCh <- events.NewSubagentFinishedEvent(seq, now, subID, result, success)
+				if !harness.SendEvent(ctx, outCh, events.NewSubagentFinishedEvent(seq, now, subID, result, success)) {
+					return
+				}
 
 			case "usage":
 				var promptTok, compTok int
@@ -235,7 +252,9 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 					compTok = int(c)
 				}
 				seq++
-				outCh <- events.NewUsageEvent(seq, now, promptTok, compTok, 0.0, "")
+				if !harness.SendEvent(ctx, outCh, events.NewUsageEvent(seq, now, promptTok, compTok, 0.0, "")) {
+					return
+				}
 
 			case "finish", "done":
 				summary, _ := raw["summary"].(string)
@@ -243,18 +262,31 @@ func (a *Adapter) ParseEvents(ctx context.Context, r io.Reader) (<-chan events.N
 					summary, _ = raw["result"].(string)
 				}
 				seq++
-				outCh <- events.NewDoneEvent(seq, now, summary, "completed")
+				if !harness.SendEvent(ctx, outCh, events.NewDoneEvent(seq, now, summary, "completed")) {
+					return
+				}
 
 			case "error":
 				msg, _ := raw["message"].(string)
 				seq++
-				outCh <- events.NewErrorEvent(seq, now, msg, raw)
+				if !harness.SendEvent(ctx, outCh, events.NewErrorEvent(seq, now, msg, raw)) {
+					return
+				}
+			default:
+				select {
+				case errCh <- fmt.Errorf("unsupported harness event; use raw terminal"):
+				default:
+				}
 			}
 		}
 
 		if err := scanner.Err(); err != nil && err != io.EOF {
 			atomic.AddInt64(&seq, 1)
-			errCh <- err
+			select {
+			case errCh <- err:
+			case <-ctx.Done():
+			default:
+			}
 		}
 	}()
 

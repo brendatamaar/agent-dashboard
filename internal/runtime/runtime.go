@@ -2,14 +2,27 @@ package runtime
 
 import (
 	"context"
+	"embed"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 )
+
+var ErrNotFound = errors.New("runtime session not found")
+var ErrUnsupported = errors.New("runtime requires Linux")
+
+//go:embed supervisor.py
+var supervisorFS embed.FS
+
+func SupervisorScript() []byte { b, _ := supervisorFS.ReadFile("supervisor.py"); return b }
 
 type Handle string
 
 type RuntimeSpec struct {
+	Mode          string
+	SetupCommand  string
 	SessionName   string
 	WorkDir       string
 	Command       []string
@@ -37,10 +50,14 @@ type ContainerInfo struct {
 	OOMKilled bool   `json:"oom_killed"`
 }
 
+// Runtime separates literal input from durable replayable output. Unknown
+// inspection outcomes are errors, never a successful zero exit. Destroy is idempotent.
 type Runtime interface {
 	Name() string
 	Create(ctx context.Context, spec RuntimeSpec) (Handle, error)
 	Exec(ctx context.Context, h Handle, cmd []string) (io.ReadCloser, error)
+	Output(ctx context.Context, h Handle) (io.ReadCloser, error)
+	Interrupt(ctx context.Context, h Handle) error
 	Attach(ctx context.Context, h Handle) (PTY, error)
 	Stats(ctx context.Context, h Handle) (Usage, error)
 	Destroy(ctx context.Context, h Handle) error
@@ -88,11 +105,15 @@ func (p *FakePTY) Resize(rows, cols uint16) error {
 type FakeRuntime struct {
 	mu       sync.RWMutex
 	sessions map[string]RuntimeSpec
+	outputs  map[string]string
+	inputs   map[string][]string
+	infos    map[string]ContainerInfo
 }
 
 func NewFakeRuntime() *FakeRuntime {
 	return &FakeRuntime{
 		sessions: make(map[string]RuntimeSpec),
+		outputs:  make(map[string]string), inputs: make(map[string][]string), infos: make(map[string]ContainerInfo),
 	}
 }
 
@@ -101,6 +122,12 @@ func (f *FakeRuntime) Name() string {
 }
 
 func (f *FakeRuntime) Create(ctx context.Context, spec RuntimeSpec) (Handle, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := ValidateSession(spec.SessionName); err != nil {
+		return "", err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, exists := f.sessions[spec.SessionName]; exists {
@@ -111,19 +138,26 @@ func (f *FakeRuntime) Create(ctx context.Context, spec RuntimeSpec) (Handle, err
 }
 
 func (f *FakeRuntime) Exec(ctx context.Context, h Handle, cmd []string) (io.ReadCloser, error) {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	if _, exists := f.sessions[string(h)]; !exists {
-		return nil, fmt.Errorf("session %q not found", h)
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return io.NopCloser(io.LimitReader(nil, 0)), nil
+	if len(cmd) != 1 {
+		return nil, fmt.Errorf("input requires exactly one literal payload")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.sessions[string(h)]; !exists {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, h)
+	}
+	f.inputs[string(h)] = append(f.inputs[string(h)], cmd[0])
+	return io.NopCloser(strings.NewReader("")), nil
 }
 
 func (f *FakeRuntime) Attach(ctx context.Context, h Handle) (PTY, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if _, exists := f.sessions[string(h)]; !exists {
-		return nil, fmt.Errorf("session %q not found", h)
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, h)
 	}
 	return &FakePTY{Rows: 24, Cols: 80}, nil
 }
@@ -132,7 +166,7 @@ func (f *FakeRuntime) Stats(ctx context.Context, h Handle) (Usage, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if _, exists := f.sessions[string(h)]; !exists {
-		return Usage{}, fmt.Errorf("session %q not found", h)
+		return Usage{}, fmt.Errorf("%w: %s", ErrNotFound, h)
 	}
 	return Usage{CPUPercent: 1.5, MemoryBytes: 1024 * 1024 * 64}, nil
 }
@@ -158,7 +192,50 @@ func (f *FakeRuntime) Inspect(ctx context.Context, h Handle) (ContainerInfo, err
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if _, exists := f.sessions[string(h)]; !exists {
-		return ContainerInfo{Status: "stopped", ExitCode: 0, OOMKilled: false}, nil
+		return ContainerInfo{}, fmt.Errorf("%w: %s", ErrNotFound, h)
+	}
+	if info, ok := f.infos[string(h)]; ok {
+		return info, nil
 	}
 	return ContainerInfo{Status: "running", ExitCode: 0, OOMKilled: false}, nil
+}
+
+func (f *FakeRuntime) Output(ctx context.Context, h Handle) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if _, ok := f.sessions[string(h)]; !ok {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, h)
+	}
+	return io.NopCloser(strings.NewReader(f.outputs[string(h)])), nil
+}
+func (f *FakeRuntime) Interrupt(ctx context.Context, h Handle) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if _, ok := f.sessions[string(h)]; !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, h)
+	}
+	return nil
+}
+
+// SeedOutput and Complete are simulator controls, never production operations.
+func (f *FakeRuntime) SeedOutput(h Handle, data string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outputs[string(h)] = data
+}
+func (f *FakeRuntime) Complete(h Handle, code int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.infos[string(h)] = ContainerInfo{Status: "exited", ExitCode: code}
+}
+func (f *FakeRuntime) Inputs(h Handle) []string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return append([]string(nil), f.inputs[string(h)]...)
 }
