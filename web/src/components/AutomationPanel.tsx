@@ -1,3 +1,4 @@
+import { errorMessage } from '../errors';
 import React, { useEffect, useState } from 'react';
 import { Clock, BookTemplate, Play, Trash2, Plus, X, RefreshCw } from 'lucide-react';
 import {
@@ -45,8 +46,8 @@ export const AutomationPanel: React.FC<AutomationPanelProps> = ({ repos, onLaunc
       setSchedules(sList);
       if (tList.length > 0 && !newSchTmplId) setNewSchTmplId(tList[0].id);
       if (repos.length > 0 && !newSchRepoId) setNewSchRepoId(repos[0].id);
-    } catch (err: any) {
-      if (onNotify) onNotify(`Failed to load automation data: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Failed to load automation data: ${errorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -69,8 +70,8 @@ export const AutomationPanel: React.FC<AutomationPanelProps> = ({ repos, onLaunc
       setNewTmplName('');
       setNewTmplPrompt('');
       if (onNotify) onNotify(`Created template: ${t.name}`);
-    } catch (err: any) {
-      if (onNotify) onNotify(`Error creating template: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Error creating template: ${errorMessage(err)}`);
     }
   };
 
@@ -80,8 +81,8 @@ export const AutomationPanel: React.FC<AutomationPanelProps> = ({ repos, onLaunc
       await deleteTemplate(id);
       setTemplates((prev) => prev.filter((t) => t.id !== id));
       if (onNotify) onNotify('Template deleted');
-    } catch (err: any) {
-      if (onNotify) onNotify(`Failed to delete template: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Failed to delete template: ${errorMessage(err)}`);
     }
   };
 
@@ -97,8 +98,8 @@ export const AutomationPanel: React.FC<AutomationPanelProps> = ({ repos, onLaunc
       setSchedules((prev) => [...prev, s]);
       setShowSchModal(false);
       if (onNotify) onNotify('Schedule created successfully');
-    } catch (err: any) {
-      if (onNotify) onNotify(`Error creating schedule: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Error creating schedule: ${errorMessage(err)}`);
     }
   };
 
@@ -106,8 +107,8 @@ export const AutomationPanel: React.FC<AutomationPanelProps> = ({ repos, onLaunc
     try {
       await triggerSchedule(id);
       if (onNotify) onNotify('Triggered scheduled run');
-    } catch (err: any) {
-      if (onNotify) onNotify(`Failed to trigger: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Failed to trigger: ${errorMessage(err)}`);
     }
   };
 
@@ -117,8 +118,8 @@ export const AutomationPanel: React.FC<AutomationPanelProps> = ({ repos, onLaunc
       await deleteSchedule(id);
       setSchedules((prev) => prev.filter((s) => s.id !== id));
       if (onNotify) onNotify('Schedule deleted');
-    } catch (err: any) {
-      if (onNotify) onNotify(`Failed to delete schedule: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Failed to delete schedule: ${errorMessage(err)}`);
     }
   };
 

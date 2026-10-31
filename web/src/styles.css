@@ -1,4 +1,6 @@
-/* Modern clean reset and dark theme styles */
+@import "tailwindcss";
+
+/* Shared phone-first theme; utility classes are generated at build time. */
 :root {
   --bg-main: #0b0f19;
   --bg-card: #131b2e;
@@ -247,7 +249,8 @@ body {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 3.5rem;
+  min-height: 3.5rem;
+  padding-bottom: env(safe-area-inset-bottom);
   background-color: #0f172a;
   border-top: 1px solid var(--border-color);
   display: flex;
@@ -272,4 +275,15 @@ body {
 
 .nav-item.active {
   color: var(--primary);
+}
+
+button, a, input, select, textarea { touch-action: manipulation; }
+button { cursor: pointer; }
+button:disabled { cursor: wait; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+@media (max-width: 420px) {
+  .container { padding: 0.75rem; }
+  .card-header { flex-wrap: wrap; gap: 0.5rem; }
+  .bottom-nav { overflow-x: auto; justify-content: flex-start; }
+  .nav-item { flex: 1 0 3.25rem; }
 }

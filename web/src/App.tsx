@@ -1,4 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { errorMessage } from './errors';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { agentFromURL, isRecord, renderValue } from './core/eventStream';
+import { useAgentEvents } from './hooks/useAgentEvents';
 import {
   Activity,
   AlertTriangle,
@@ -29,7 +32,6 @@ import {
   ApprovalItem,
   AuditEntry,
   CreateAgentInput,
-  NormalizedEvent,
   Repo,
   RepoSettings,
   Template,
@@ -48,7 +50,6 @@ import {
   deleteSecret,
   fetchRepo,
   getAgent,
-  getAgentEvents,
   getAgents,
   getApprovals,
   getAuditLogs,
@@ -63,17 +64,19 @@ import {
   registerPasskey,
   sendAgentMessage,
   stopAgent,
+  resumeAgent,
+  interruptAgent,
   subscribePush,
   unsubscribePush,
   updateRepoSettings,
 } from './api';
-import { Terminal } from './components/Terminal';
+const Terminal = lazy(() => import('./components/Terminal').then((m) => ({ default: m.Terminal })));
 import { ApprovalCard } from './components/ApprovalCard';
 import { HarnessManager } from './components/HarnessManager';
 import { AutomationPanel } from './components/AutomationPanel';
 import { NotificationSettings } from './components/NotificationSettings';
 import { RepoSubagents } from './components/RepoSubagents';
-import { CommitSheet } from './components/CommitSheet';
+const CommitSheet = lazy(() => import('./components/CommitSheet').then((m) => ({ default: m.CommitSheet })));
 
 export default function App() {
   const [loading, setLoading] = useState(true);
@@ -88,7 +91,7 @@ export default function App() {
   // Navigation: 'agents' is the default phone-first screen
   const [activeTab, setActiveTab] = useState<'agents' | 'repos' | 'automation' | 'terminal' | 'system' | 'secrets' | 'audit'>('agents');
   const [startHarness, setStartHarness] = useState('claude');
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() => agentFromURL(window.location.href));
   const [showStartModal, setShowStartModal] = useState(false);
   const [showAddRepoModal, setShowAddRepoModal] = useState(false);
   const [showAgentTerminal, setShowAgentTerminal] = useState(false);
@@ -108,8 +111,8 @@ export default function App() {
   const [startRepoId, setStartRepoId] = useState('');
   const [startPrompt, setStartPrompt] = useState('');
   const [startMode, setStartMode] = useState<'task' | 'interactive'>('task');
-  const [startRuntime, setStartRuntime] = useState<'docker' | 'host'>('host');
-  const [startModel, setStartModel] = useState('sonnet');
+  const [startRuntime, setStartRuntime] = useState<'docker' | 'host'>('docker');
+  const [startModel, setStartModel] = useState('');
   const [startBaseBranch, setStartBaseBranch] = useState('');
   const [startCustomBranch, setStartCustomBranch] = useState('');
 
@@ -136,9 +139,11 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Agent detail states
-  const [agentEvents, setAgentEvents] = useState<NormalizedEvent[]>([]);
+  const agentStream = useAgentEvents(selectedAgentId, Boolean(user));
+  const agentEvents = agentStream.events;
   const [followupMsg, setFollowupMsg] = useState('');
-  const eventStreamRef = useRef<WebSocket | null>(null);
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>();
+  const refreshGeneration = useRef(0);
   const eventsEndRef = useRef<HTMLDivElement>(null);
 
   function urlBase64ToUint8Array(base64String: string) {
@@ -171,8 +176,8 @@ export default function App() {
           await loadDashboardData();
         }
       }
-    } catch (err: any) {
-      setError(err.message || 'Initialization failed');
+    } catch (err: unknown) {
+      setError(errorMessage(err) || 'Initialization failed');
     } finally {
       setLoading(false);
     }
@@ -195,7 +200,7 @@ export default function App() {
       if (rList.length > 0 && !startRepoId) {
         setStartRepoId(rList[0].id);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn('Dashboard data fetch error:', err);
     }
   };
@@ -222,83 +227,96 @@ export default function App() {
     }
   }, [user]);
 
-  // Poll for agent updates every 5 seconds when logged in
+  // Stream state changes and use a slow, foreground-only fallback for missed frames.
   useEffect(() => {
     if (!user) return;
-    const interval = setInterval(() => {
-      getAgents().then(setAgents).catch(() => {});
-      if (activeTab === 'repos') {
-        getRepos().then(setRepos).catch(() => {});
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [user, activeTab]);
+    let socket: WebSocket | undefined;
+    let reconnect: ReturnType<typeof setTimeout> | undefined;
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return;
+      getAgents().then((list) => { if (!cancelled) setAgents(list); }).catch(() => {});
+      if (activeTab === 'repos') getRepos().then((list) => { if (!cancelled) setRepos(list); }).catch(() => {});
+    };
+    const connect = () => {
+      if (cancelled || selectedAgentId) return;
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(`${protocol}//${location.host}/api/events/ws`);
+      socket.onmessage = () => {
+        if (!pending) pending = setTimeout(() => { pending = undefined; refresh(); }, 1000);
+      };
+      socket.onopen = refresh;
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => { if (!cancelled) reconnect = setTimeout(connect, 3000); };
+    };
+    const interval = setInterval(refresh, 30_000);
+    document.addEventListener('visibilitychange', refresh);
+    connect();
+    return () => {
+      cancelled = true; clearInterval(interval); clearTimeout(pending); clearTimeout(reconnect); socket?.close();
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [user, activeTab, selectedAgentId]);
 
   const loadApprovals = async (agentId: string) => {
-    try {
-      const list = await getApprovals(agentId);
-      setAgentApprovals(list.filter((a) => a.decision === 'pending'));
-    } catch {
-      // ignore
-    }
+    const list = await getApprovals(agentId);
+    return list.filter((approval) => approval.decision === 'pending');
   };
 
-  // Poll approvals when an agent is selected
   useEffect(() => {
-    if (!selectedAgentId) {
-      setAgentApprovals([]);
-      return;
-    }
-    loadApprovals(selectedAgentId);
-    const interval = setInterval(() => {
-      loadApprovals(selectedAgentId);
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [selectedAgentId]);
-
-  // Connect to WebSocket events when viewing agent detail
-  useEffect(() => {
-    if (!selectedAgentId) return;
-
-    // Load initial historical events
-    getAgentEvents(selectedAgentId, 0).then((rawList) => {
-      const parsed = rawList.map((r) => {
-        let payload = {};
-        try {
-          payload = JSON.parse(r.payload_json);
-        } catch {}
-        return {
-          seq: r.seq,
-          type: r.type as any,
-          timestamp: new Date().toISOString(),
-          payload,
-        };
-      });
-      setAgentEvents(parsed);
-    });
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/events/ws?agent_id=${encodeURIComponent(selectedAgentId)}`;
-    const ws = new WebSocket(wsUrl);
-    eventStreamRef.current = ws;
-
-    ws.onmessage = (ev) => {
-      try {
-        const eventData: NormalizedEvent = JSON.parse(ev.data);
-        setAgentEvents((prev) => [...prev, eventData]);
-        if (eventData.type === 'approval_needed') {
-          loadApprovals(selectedAgentId);
-        }
-        getAgent(selectedAgentId).then((updated) => {
-          setAgents((all) => all.map((a) => (a.id === updated.id ? updated : a)));
-        });
-      } catch {}
+    refreshGeneration.current++;
+    if (!selectedAgentId || !user) { setAgentApprovals([]); return; }
+    let cancelled = false;
+    const refresh = () => {
+      if (document.visibilityState === 'visible') loadApprovals(selectedAgentId)
+        .then((list) => { if (!cancelled) setAgentApprovals(list); }).catch(() => {});
     };
-
+    setAgentApprovals([]); refresh();
+    const interval = setInterval(refresh, 30_000);
     return () => {
-      ws.close();
+      cancelled = true; refreshGeneration.current++;
+      clearInterval(interval); clearTimeout(refreshTimer.current); refreshTimer.current = undefined;
     };
+  }, [selectedAgentId, user]);
+
+  useEffect(() => {
+    if (!selectedAgentId || !user || refreshTimer.current) return;
+    const id = selectedAgentId;
+    const generation = refreshGeneration.current;
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = undefined;
+      getAgent(id).then((updated) => {
+        if (refreshGeneration.current === generation) setAgents((all) => all.map((agent) => agent.id === id ? updated : agent));
+      }).catch(() => {});
+      loadApprovals(id).then((list) => {
+        if (refreshGeneration.current === generation) setAgentApprovals(list);
+      }).catch(() => {});
+    }, 1000);
+  }, [agentStream.cursor, selectedAgentId, user]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.pathname.startsWith('/agents/')) url.pathname = '/';
+    if (selectedAgentId) url.searchParams.set('agent_id', selectedAgentId);
+    else url.searchParams.delete('agent_id');
+    window.history.replaceState(null, '', url);
   }, [selectedAgentId]);
+
+  useEffect(() => {
+    const onNavigate = () => setSelectedAgentId(agentFromURL(window.location.href));
+    window.addEventListener('popstate', onNavigate);
+    return () => window.removeEventListener('popstate', onNavigate);
+  }, []);
+
+  useEffect(() => {
+    if (!showStartModal || !startRepoId) return;
+    let cancelled = false;
+    getRepoSettings(startRepoId).then((settings) => {
+      if (!cancelled) setStartRuntime(settings.runtime || 'docker');
+    }).catch(() => { if (!cancelled) setStartRuntime('docker'); });
+    return () => { cancelled = true; };
+  }, [showStartModal, startRepoId]);
 
   // Scroll live events to bottom
   useEffect(() => {
@@ -318,8 +336,8 @@ export default function App() {
       const me = await getMe();
       setUser(me);
       if (me) loadDashboardData();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -341,8 +359,8 @@ export default function App() {
       }
       setUser(me);
       loadDashboardData();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -353,8 +371,8 @@ export default function App() {
       const me = await getMe();
       setUser(me);
       if (me) loadDashboardData();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -365,8 +383,8 @@ export default function App() {
       alert('Passkey successfully registered!');
       const me = await getMe();
       setUser(me);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -375,13 +393,25 @@ export default function App() {
       await apiFetch('/api/auth/logout', { method: 'POST' });
     } finally {
       setUser(null);
+      setSelectedAgentId(null);
+      setAgents([]); setRepos([]); setSecrets([]); setAuditLogs([]);
       setTotpSecretBanner(null);
     }
   };
 
   const handleLaunchFromTemplate = (tmpl: Template) => {
     setStartHarness(tmpl.harness || 'claude');
+    setStartModel('');
     setStartPrompt(tmpl.prompt);
+    if (tmpl.settings_json) {
+      try {
+        const settings: unknown = JSON.parse(tmpl.settings_json);
+        if (isRecord(settings)) {
+          if (typeof settings.model === 'string') setStartModel(settings.model);
+          if (settings.mode === 'task' || settings.mode === 'interactive') setStartMode(settings.mode);
+        }
+      } catch { setError('This template contains invalid settings.'); return; }
+    }
     setShowStartModal(true);
   };
 
@@ -405,8 +435,8 @@ export default function App() {
       setStartPrompt('');
       setStartCustomBranch('');
       setSelectedAgentId(newAgent.id);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -419,8 +449,8 @@ export default function App() {
       setNewRepoUrl('');
       setNewRepoName('');
       setShowAddRepoModal(false);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -432,8 +462,8 @@ export default function App() {
       setNewSecVal('');
       const sec = await getSecrets();
       setSecrets(sec);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -443,8 +473,8 @@ export default function App() {
     try {
       await sendAgentMessage(selectedAgentId, followupMsg.trim());
       setFollowupMsg('');
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -469,9 +499,9 @@ export default function App() {
         setPushSubscribed(true);
         showToast('Push notifications enabled!');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Push subscription failed:', err);
-      alert('Failed to toggle push notifications: ' + (err.message || err));
+      alert('Failed to toggle push notifications: ' + (errorMessage(err) || err));
     } finally {
       setPushLoading(false);
     }
@@ -486,8 +516,8 @@ export default function App() {
         setAgents((all) => all.map((a) => (a.id === updated.id ? updated : a)));
       });
       showToast(decision === 'deny' ? 'Action denied' : 'Action approved');
-    } catch (err: any) {
-      alert('Failed to submit approval decision: ' + (err.message || err));
+    } catch (err: unknown) {
+      alert('Failed to submit approval decision: ' + (errorMessage(err) || err));
     }
   };
 
@@ -496,8 +526,8 @@ export default function App() {
       await stopAgent(id);
       const updated = await getAgent(id);
       setAgents((prev) => prev.map((a) => (a.id === id ? updated : a)));
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -506,8 +536,8 @@ export default function App() {
       await cancelAgent(id);
       setAgents((prev) => prev.filter((a) => a.id !== id));
       if (selectedAgentId === id) setSelectedAgentId(null);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -528,8 +558,8 @@ export default function App() {
       const updated = await updateRepoSettings(settingsRepo.id, repoSettings);
       setRepoSettings(updated);
       setSettingsRepo(null);
-    } catch (err: any) {
-      alert(`Failed to save settings: ${err.message}`);
+    } catch (err: unknown) {
+      alert(`Failed to save settings: ${errorMessage(err)}`);
     } finally {
       setSavingSettings(false);
     }
@@ -541,8 +571,8 @@ export default function App() {
       await deleteAgent(id);
       setAgents((prev) => prev.filter((a) => a.id !== id));
       if (selectedAgentId === id) setSelectedAgentId(null);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -806,6 +836,12 @@ export default function App() {
               >
                 <TerminalIcon style={{ width: 16, height: 16 }} /> {showAgentTerminal ? 'Live View' : 'Terminal'}
               </button>
+              {['done', 'stopped', 'failed'].includes(selectedAgent.state) && (
+                <button className="btn btn-primary" onClick={() => resumeAgent(selectedAgent.id).then(loadDashboardData).catch((err: unknown) => setError(errorMessage(err)))}>Resume</button>
+              )}
+              {['running', 'awaiting_approval', 'idle'].includes(selectedAgent.state) && (
+                <button className="btn btn-secondary" onClick={() => interruptAgent(selectedAgent.id).catch((err: unknown) => setError(errorMessage(err)))}>Interrupt</button>
+              )}
               {selectedAgent.state === 'queued' && (
                 <button className="btn btn-secondary" onClick={() => handleCancelAgent(selectedAgent.id)}>
                   <Square style={{ width: 16, height: 16, color: 'var(--danger)' }} /> Cancel Queue
@@ -877,30 +913,31 @@ export default function App() {
 
             {showAgentTerminal ? (
               <div style={{ height: '420px', marginTop: '0.5rem' }}>
-                <Terminal agentId={selectedAgent.id} />
+                <Suspense fallback={<p>Loading terminal…</p>}><Terminal agentId={selectedAgent.id} /></Suspense>
               </div>
             ) : (
               <div>
                 <h3 style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                  Live Event Stream
+                  Live Event Stream · {agentStream.status}
                 </h3>
                 <div style={{ maxHeight: '380px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem', paddingRight: '0.25rem' }}>
+                  {agentStream.truncated && <p className="text-xs text-slate-400">Showing the latest 400 events.</p>}
                   {agentEvents.length === 0 ? (
                     <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', fontStyle: 'italic', padding: '1rem 0' }}>
                       Waiting for stream events...
                     </p>
                   ) : (
-                    agentEvents.map((ev, i) => {
+                    agentEvents.map((ev) => {
                       if (ev.type === 'message') {
                         return (
-                          <div key={i} className={`event-bubble ${ev.payload.role === 'assistant' ? 'assistant' : 'user'}`}>
-                            {ev.payload.text || JSON.stringify(ev.payload)}
+                          <div key={ev.seq} className={`event-bubble ${ev.payload.role === 'assistant' ? 'assistant' : 'user'}`}>
+                            {renderValue(ev.payload.text) || JSON.stringify(ev.payload)}
                           </div>
                         );
                       } else if (ev.type === 'tool_call') {
                         return (
-                          <div key={i} className="event-bubble tool">
-                            <span style={{ color: '#38bdf8' }}>&gt; Tool: {ev.payload.name}</span>
+                          <div key={ev.seq} className="event-bubble tool">
+                            <span style={{ color: '#38bdf8' }}>&gt; Tool: {renderValue(ev.payload.name)}</span>
                             <div style={{ color: 'var(--text-muted)', marginTop: '0.25rem' }}>
                               {JSON.stringify(ev.payload.input)}
                             </div>
@@ -908,7 +945,7 @@ export default function App() {
                         );
                       } else if (ev.type === 'tool_result') {
                         return (
-                          <div key={i} className="event-bubble tool" style={{ borderLeft: '3px solid #10b981' }}>
+                          <div key={ev.seq} className="event-bubble tool" style={{ borderLeft: '3px solid #10b981' }}>
                             <span style={{ color: '#34d399' }}>✓ Result</span>
                             <div style={{ color: 'var(--text-muted)', marginTop: '0.25rem', maxHeight: '100px', overflowY: 'auto' }}>
                               {typeof ev.payload.content === 'string' ? ev.payload.content : JSON.stringify(ev.payload.content)}
@@ -917,14 +954,14 @@ export default function App() {
                         );
                       } else if (ev.type === 'usage') {
                         return (
-                          <div key={i} className="badge badge-muted" style={{ alignSelf: 'flex-start', margin: '0.25rem 0' }}>
-                            Tokens: {ev.payload.input_tokens} in / {ev.payload.output_tokens} out · ${Number(ev.payload.cost_usd || 0).toFixed(4)}
+                          <div key={ev.seq} className="badge badge-muted" style={{ alignSelf: 'flex-start', margin: '0.25rem 0' }}>
+                            Tokens: {renderValue(ev.payload.input_tokens)} in / {renderValue(ev.payload.output_tokens)} out · ${Number(ev.payload.cost_usd || 0).toFixed(4)}
                           </div>
                         );
                       } else if (ev.type === 'done') {
                         return (
-                          <div key={i} className="event-bubble assistant" style={{ borderLeft: '3px solid #10b981' }}>
-                            <strong style={{ color: '#34d399' }}>Completed:</strong> {ev.payload.result}
+                          <div key={ev.seq} className="event-bubble assistant" style={{ borderLeft: '3px solid #10b981' }}>
+                            <strong style={{ color: '#34d399' }}>Completed:</strong> {renderValue(ev.payload.result)}
                           </div>
                         );
                       }
@@ -941,7 +978,7 @@ export default function App() {
                     type="text"
                     value={followupMsg}
                     onChange={(e) => setFollowupMsg(e.target.value)}
-                    placeholder="Send a follow-up instruction to Claude..."
+                    placeholder="Send a follow-up instruction..."
                   />
                   <button className="btn btn-primary" type="submit">
                     <Send style={{ width: 16, height: 16 }} />
@@ -1162,7 +1199,7 @@ export default function App() {
         <div>
           <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.75rem' }}>Host Web Terminal</h2>
           <div style={{ height: '520px' }}>
-            <Terminal />
+            <Suspense fallback={<p>Loading terminal…</p>}><Terminal /></Suspense>
           </div>
         </div>
       )}
@@ -1385,11 +1422,7 @@ export default function App() {
                   onChange={(e) => {
                     const h = e.target.value;
                     setStartHarness(h);
-                    if (h === 'claude') setStartModel('sonnet');
-                    else if (h === 'antigravity') setStartModel('gemini-2.5-pro');
-                    else if (h === 'gemini') setStartModel('gemini-2.5-pro');
-                    else if (h === 'codex') setStartModel('o3-mini');
-                    else if (h === 'muse') setStartModel('muse-1');
+                    setStartModel('');
                   }}
                 >
                   <option value="claude">Claude Code (Anthropic)</option>
@@ -1456,46 +1489,10 @@ export default function App() {
                   list="model-options"
                   value={startModel}
                   onChange={(e) => setStartModel(e.target.value)}
-                  placeholder="e.g. sonnet, gemini-2.5-pro, o3-mini"
-                  required
+                  placeholder="Leave empty to use the harness default"
                 />
                 <datalist id="model-options">
-                  {startHarness === 'claude' && (
-                    <>
-                      <option value="sonnet">sonnet (Always Latest Sonnet)</option>
-                      <option value="opus">opus (Always Latest Opus)</option>
-                      <option value="haiku">haiku (Always Latest Haiku)</option>
-                      <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet</option>
-                      <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
-                      <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku</option>
-                    </>
-                  )}
-                  {startHarness === 'antigravity' && (
-                    <>
-                      <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-                      <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                      <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                      <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
-                    </>
-                  )}
-                  {startHarness === 'gemini' && (
-                    <>
-                      <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-                      <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                    </>
-                  )}
-                  {startHarness === 'codex' && (
-                    <>
-                      <option value="o3-mini">o3-mini</option>
-                      <option value="gpt-4o">GPT-4o</option>
-                      <option value="o1">o1</option>
-                    </>
-                  )}
-                  {startHarness === 'muse' && (
-                    <>
-                      <option value="muse-1">muse-1</option>
-                    </>
-                  )}
+                  {startHarness === 'claude' && <><option value="sonnet" /><option value="opus" /><option value="haiku" /></>}
                 </datalist>
               </div>
 
@@ -1650,7 +1647,7 @@ export default function App() {
 
       {/* COMMIT & REVIEW SHEET */}
       {commitSheetAgent && (
-        <CommitSheet
+        <Suspense fallback={<p>Loading Git review…</p>}><CommitSheet
           agentId={commitSheetAgent.id}
           agentBranch={commitSheetAgent.branch}
           agentPrompt={commitSheetAgent.prompt}
@@ -1659,7 +1656,7 @@ export default function App() {
             showToast(msg);
             loadDashboardData();
           }}
-        />
+        /></Suspense>
       )}
 
       {/* TOAST MESSAGE */}

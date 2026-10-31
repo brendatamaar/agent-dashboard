@@ -1,3 +1,4 @@
+import { errorMessage } from '../errors';
 import React, { useEffect, useState } from 'react';
 import { Bot, Plus, Trash2, Edit3, X, Save } from 'lucide-react';
 import { SubagentDef, listRepoSubagents, saveRepoSubagent, deleteRepoSubagent } from '../api';
@@ -18,8 +19,8 @@ export const RepoSubagents: React.FC<RepoSubagentsProps> = ({ repoId, onNotify }
     try {
       const list = await listRepoSubagents(repoId);
       setSubagents(list);
-    } catch (err: any) {
-      if (onNotify) onNotify(`Failed to list subagents: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Failed to list subagents: ${errorMessage(err)}`);
     }
   };
 
@@ -50,8 +51,8 @@ export const RepoSubagents: React.FC<RepoSubagentsProps> = ({ repoId, onNotify }
       });
       setShowModal(false);
       if (onNotify) onNotify(`Saved subagent .claude/agents/${saved.name}.md`);
-    } catch (err: any) {
-      if (onNotify) onNotify(`Failed to save subagent: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Failed to save subagent: ${errorMessage(err)}`);
     } finally {
       setSaving(false);
     }
@@ -63,8 +64,8 @@ export const RepoSubagents: React.FC<RepoSubagentsProps> = ({ repoId, onNotify }
       await deleteRepoSubagent(repoId, name);
       setSubagents((prev) => prev.filter((s) => s.name !== name));
       if (onNotify) onNotify('Subagent deleted');
-    } catch (err: any) {
-      if (onNotify) onNotify(`Failed to delete subagent: ${err.message}`);
+    } catch (err: unknown) {
+      if (onNotify) onNotify(`Failed to delete subagent: ${errorMessage(err)}`);
     }
   };
 

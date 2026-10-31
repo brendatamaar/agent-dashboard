@@ -1,0 +1,10 @@
+{
+  "$schema": "./.agents/schema/functional-effect.schema.json",
+  "core": ["internal/core/**", "web/src/core/**"],
+  "shell": ["internal/shell/**", "internal/store/**", "internal/runtime/**", "internal/harness/**", "internal/api/**", "cmd/**", "web/src/**"],
+  "exclude": ["web/dist/**"],
+  "mode": "deny",
+  "stopCheck": "changed",
+  "profile": "distributed",
+  "designDir": "docs/design"
+}

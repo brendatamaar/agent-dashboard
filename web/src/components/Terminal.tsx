@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -12,9 +12,12 @@ export const Terminal: React.FC<TerminalProps> = ({ agentId, onClose }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const [status, setStatus] = useState('Connecting');
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!containerRef.current) return;
+    setStatus('Connecting');
 
     const term = new XTerm({
       cursorBlink: true,
@@ -40,9 +43,12 @@ export const Terminal: React.FC<TerminalProps> = ({ agentId, onClose }) => {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      setStatus('Connected');
       // Send initial dimensions
       ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
     };
+    ws.onclose = () => setStatus('Disconnected');
+    ws.onerror = () => setStatus('Connection failed');
 
     ws.onmessage = (event) => {
       if (typeof event.data === 'string') {
@@ -66,13 +72,20 @@ export const Terminal: React.FC<TerminalProps> = ({ agentId, onClose }) => {
     };
 
     window.addEventListener('resize', handleResize);
+    const observer = new ResizeObserver(handleResize);
+    observer.observe(containerRef.current);
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      observer.disconnect();
+      ws.onclose = null;
+      ws.onerror = null;
       ws.close();
       term.dispose();
+      termRef.current = null;
+      wsRef.current = null;
     };
-  }, [agentId]);
+  }, [agentId, attempt]);
 
   // Terminal mobile extra keys
   const sendKey = (key: string) => {
@@ -86,9 +99,11 @@ export const Terminal: React.FC<TerminalProps> = ({ agentId, onClose }) => {
     <div className="flex flex-col h-full bg-slate-900 rounded-lg overflow-hidden border border-slate-700">
       <div className="flex items-center justify-between px-3 py-2 bg-slate-800 border-b border-slate-700 text-xs text-slate-300">
         <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span className={`w-2.5 h-2.5 rounded-full ${status === 'Connected' ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
           <span className="font-mono">{agentId ? `Session: ${agentId}` : 'Host Shell'}</span>
+          <span role="status">{status}</span>
         </div>
+        {status !== 'Connected' && status !== 'Connecting' && <button onClick={() => setAttempt((value) => value + 1)}>Reconnect</button>}
         {onClose && (
           <button
             onClick={onClose}

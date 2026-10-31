@@ -1,3 +1,4 @@
+import { errorMessage } from '../errors';
 import React, { useState, useEffect } from 'react';
 import {
   X,
@@ -63,8 +64,8 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
       ]);
       setStatus(st);
       setChanges(ch);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load git status');
+    } catch (err: unknown) {
+      setError(errorMessage(err) || 'Failed to load git status');
     }
   };
 
@@ -76,8 +77,8 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
     try {
       const d = await getGitDiff(agentId, file, staged);
       setDiff(d);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load diff');
+    } catch (err: unknown) {
+      setError(errorMessage(err) || 'Failed to load diff');
     }
   };
 
@@ -91,8 +92,8 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
       await stageGitFiles(agentId, [path]);
       await loadGitState();
       await loadDiff(selectedFile || undefined);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -102,8 +103,8 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
       await unstageGitFiles(agentId, [path]);
       await loadGitState();
       await loadDiff(selectedFile || undefined);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -112,8 +113,8 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
       await stageGitFiles(agentId, []);
       await loadGitState();
       await loadDiff(selectedFile || undefined);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -122,8 +123,8 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
       await unstageGitFiles(agentId, []);
       await loadGitState();
       await loadDiff(selectedFile || undefined);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     }
   };
 
@@ -151,8 +152,8 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
       await loadGitState();
       await loadDiff();
       onSuccess?.('Commit successful');
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -166,11 +167,11 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
       setShowMainConfirmModal(false);
       await loadGitState();
       onSuccess?.('Pushed to upstream successfully');
-    } catch (err: any) {
-      if (err.message && err.message.includes('explicit confirmation')) {
+    } catch (err: unknown) {
+      if (errorMessage(err) && errorMessage(err).includes('explicit confirmation')) {
         setShowMainConfirmModal(true);
       } else {
-        setError(err.message);
+        setError(errorMessage(err));
       }
     } finally {
       setLoading(false);
@@ -192,8 +193,8 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
       await pullRebaseGit(agentId);
       await loadGitState();
       onSuccess?.('Rebased successfully onto base branch');
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -206,8 +207,8 @@ export const CommitSheet: React.FC<CommitSheetProps> = ({
       const res = await createPR(agentId, prTitle, prBody);
       setShowPRModal(false);
       onSuccess?.(`PR #${res.pr.number} created: ${res.pr.html_url}`);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
